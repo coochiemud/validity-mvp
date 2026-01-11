@@ -1,30 +1,213 @@
 # analyzer.py
-from openai import OpenAI
 import json
 import os
 import re
 import time
+from typing import List, Dict
+
+from openai import OpenAI
 from dotenv import load_dotenv
+
 from prompts import build_prompt
 from failure_library import REASONING_FAILURES, ALLOWED_FAILURE_TYPES
 
 load_dotenv()
 
+
 class ValidityAnalyzer:
+    """
+    Core reasoning analysis engine for Validity.
+
+    Responsibilities:
+    - Call OpenAI with a strict JSON contract
+    - Analyse reasoning quality (not content quality)
+    - Normalise failures against a fixed taxonomy
+    - Compute deterministic scores and risk flags
+    """
+
     def __init__(self):
-        self.client = OpenAI(
-            api_key=os.getenv("OPENAI_API_KEY")
-        )
-        self.model = os.getenv("MODEL_NAME", "gpt-4o")
-        
-        # Production limits
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY not set")
+
+        self.client = OpenAI(api_key=api_key)
+        self.model = os.getenv("MODEL_NAME", "gpt-4o-mini")
+
+        # Hard limits (defensive)
         self.MAX_FAILURES_RETURNED = 10
         self.MAX_SYNTHESIS_ITEMS = 5
-    
+
+    # ---------------------------------------------------------------------
+    # Utilities
+    # ---------------------------------------------------------------------
+
     def _normalize_text(self, text: str) -> str:
-        """Clean up input text"""
         text = text.replace("\x00", "")
         text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    def _severity_rank(self, sev: str) -> int:
+        return {"critical": 3, "high": 2, "medium": 1}.get(sev, 0)
+
+    # ---------------------------------------------------------------------
+    # OpenAI interaction
+    # ---------------------------------------------------------------------
+
+    def _call_model(self, prompt: str) -> Dict:
+        """
+        Single, hardened OpenAI call that guarantees JSON or raises.
+        """
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=4000,
+            response_format={"type": "json_object"},
+        )
+
+        content = response.choices[0].message.content
+        return json.loads(content)
+
+    # ---------------------------------------------------------------------
+    # Chunk analysis
+    # ---------------------------------------------------------------------
+
+    def _chunk_document(self, document: str, max_words: int = 2000) -> List[str]:
+        words = document.split()
+        if len(words) <= max_words:
+            return [document]
+
+        chunks = []
+        current = []
+        for word in words:
+            current.append(word)
+            if len(current) >= max_words:
+                chunks.append(" ".join(current))
+                current = []
+        if current:
+            chunks.append(" ".join(current))
+
+        return chunks
+
+    def _analyze_chunk(self, chunk: str) -> Dict:
+        prompt = build_prompt(chunk)
+        return self._call_model(prompt)
+
+    # ---------------------------------------------------------------------
+    # Synthesis
+    # ---------------------------------------------------------------------
+
+    def _synthesize(self, analyses: List[Dict]) -> Dict:
+        if len(analyses) == 1:
+            return analyses[0]
+
+        prompt = f"""
+You are merging multiple Validity reasoning analyses into ONE final analysis.
+
+Rules:
+- Return ONLY valid JSON
+- Deduplicate claims and failures
+- Keep highest-signal items only
+- Choose the single strongest thesis
+- No commentary
+
+INPUT:
+{json.dumps(analyses, indent=2)}
+"""
+        return self._call_model(prompt)
+
+    # ---------------------------------------------------------------------
+    # Failure normalisation + scoring
+    # ---------------------------------------------------------------------
+
+    def _normalize_failures(self, failures: List[Dict]) -> List[Dict]:
+        clean = []
+        for f in failures:
+            ftype = f.get("type")
+            if ftype not in ALLOWED_FAILURE_TYPES:
+                continue
+            meta = REASONING_FAILURES.get(ftype)
+            if meta:
+                f["severity"] = meta["severity"]
+                f["actionability"] = meta["actionability"]
+            clean.append(f)
+        return clean
+
+    def _compute_score(self, failures: List[Dict]) -> int:
+        score = 100
+        for f in failures:
+            sev = f.get("severity")
+            if sev == "critical":
+                score -= 35
+            elif sev == "high":
+                score -= 20
+            elif sev == "medium":
+                score -= 10
+        return max(0, min(100, score))
+
+    def _compute_decision_risk(self, failures: List[Dict]) -> str:
+        if any(f.get("severity") == "critical" for f in failures):
+            return "critical"
+        highs = sum(1 for f in failures if f.get("severity") == "high")
+        if highs >= 3:
+            return "high"
+        if highs >= 1:
+            return "medium"
+        return "low"
+
+    # ---------------------------------------------------------------------
+    # Public API
+    # ---------------------------------------------------------------------
+
+    def analyze(self, document: str, timeout_seconds: int = 60) -> Dict:
+        start = time.time()
+
+        document = self._normalize_text(document)
+        if len(document) < 50:
+            return {"success": False, "error": "Document too short"}
+
+        chunks = self._chunk_document(document)
+        results = []
+
+        for i, chunk in enumerate(chunks, start=1):
+            if time.time() - start > timeout_seconds:
+                return {
+                    "success": False,
+                    "error": f"Timeout after {timeout_seconds}s",
+                }
+            try:
+                results.append(self._analyze_chunk(chunk))
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": f"Model error on chunk {i}: {e}",
+                }
+
+        final = self._synthesize(results)
+
+        failures = final.get("failures_detected", [])
+        failures = self._normalize_failures(failures)
+        failures = sorted(
+            failures,
+            key=lambda f: (-self._severity_rank(f.get("severity")), f.get("type", "")),
+        )
+
+        total_failures = len(failures)
+        failures = failures[: self.MAX_FAILURES_RETURNED]
+
+        final["failures_detected"] = failures
+        final["total_failures_detected"] = total_failures
+        final["reasoning_score"] = self._compute_score(failures)
+        final["decision_risk"] = self._compute_decision_risk(failures)
+        final["top_risk_flags"] = [f["type"] for f in failures[:3]]
+
+        return {
+            "success": True,
+            "analysis": final,
+            "chunks_analyzed": len(chunks),
+            "analysis_time": round(time.time() - start, 2),
+        }
+
         return text.strip()
     
     def _clean_json_response(self, text: str) -> str:
