@@ -1,5 +1,5 @@
 # analyzer.py
-import anthropic
+from openai import OpenAI
 import json
 import os
 import re
@@ -12,10 +12,10 @@ load_dotenv()
 
 class ValidityAnalyzer:
     def __init__(self):
-        self.client = anthropic.Anthropic(
-            api_key=os.getenv("ANTHROPIC_API_KEY")
+        self.client = OpenAI(
+            api_key=os.getenv("OPENAI_API_KEY")
         )
-        self.model = os.getenv("MODEL_NAME", "claude-sonnet-4-20250514")
+        self.model = os.getenv("MODEL_NAME", "gpt-4o")
         
         # Production limits
         self.MAX_FAILURES_RETURNED = 10
@@ -42,7 +42,7 @@ class ValidityAnalyzer:
         return cleaned.strip()
     
     def _repair_json(self, bad_json: str) -> str:
-        """Attempt to repair invalid JSON using Claude (one attempt only)"""
+        """Attempt to repair invalid JSON using OpenAI (one attempt only)"""
         repair_prompt = f"""The following is invalid JSON. Fix it and return ONLY valid JSON matching the original structure.
 
 Rules:
@@ -56,14 +56,14 @@ INVALID JSON:
 
 Return the corrected JSON:"""
         
-        message = self.client.messages.create(
+        response = self.client.chat.completions.create(
             model=self.model,
+            messages=[{"role": "user", "content": repair_prompt}],
             max_tokens=4000,
-            temperature=0,
-            messages=[{"role": "user", "content": repair_prompt}]
+            temperature=0
         )
         
-        repaired = message.content[0].text
+        repaired = response.choices[0].message.content
         return self._clean_json_response(repaired)
     
     def _enforce_allowed_failure_types(self, failures) -> list:
@@ -172,14 +172,14 @@ Return the corrected JSON:"""
         """Analyze a single chunk (with fallback on parse failure)"""
         prompt = build_prompt(chunk)
         
-        message = self.client.messages.create(
+        response = self.client.chat.completions.create(
             model=self.model,
+            messages=[{"role": "user", "content": prompt}],
             max_tokens=4000,
-            temperature=0,
-            messages=[{"role": "user", "content": prompt}]
+            temperature=0
         )
         
-        response_text = message.content[0].text
+        response_text = response.choices[0].message.content
         cleaned = self._clean_json_response(response_text)
         
         try:
@@ -230,14 +230,14 @@ CHUNK_RESULTS:
 
 Return the synthesized JSON:"""
             
-            message = self.client.messages.create(
+            response = self.client.chat.completions.create(
                 model=self.model,
+                messages=[{"role": "user", "content": prompt}],
                 max_tokens=4000,
-                temperature=0,
-                messages=[{"role": "user", "content": prompt}]
+                temperature=0
             )
             
-            cleaned = self._clean_json_response(message.content[0].text)
+            cleaned = self._clean_json_response(response.choices[0].message.content)
             
             try:
                 result = json.loads(cleaned)

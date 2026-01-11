@@ -2,15 +2,19 @@
 import streamlit as st
 import hashlib
 import hmac
-from analyzer import ValidityAnalyzer
 
-st.set_page_config(page_title="Validity", page_icon="🔍", layout="wide")
+
+ANALYZER_VERSION = "openai-2026-01-11-v2"
 
 @st.cache_resource
-def get_analyzer():
+def get_analyzer(version: str):
+    from analyzer import ValidityAnalyzer
     return ValidityAnalyzer()
 
-analyzer = get_analyzer()
+analyzer = get_analyzer(ANALYZER_VERSION)
+import analyzer as _a
+st.caption(f"Analyzer loaded from: {_a.__file__} | version: {ANALYZER_VERSION}")
+
 
 # Taxonomy/prompt version - bump when you change prompt or failure library
 TAXONOMY_VERSION = "v1"
