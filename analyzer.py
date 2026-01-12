@@ -25,7 +25,7 @@ class ChunkResult:
 class ValidityAnalyzer:
     """
     Core reasoning analyzer.
-    This module must remain PURE (no Streamlit, no caching, no side effects).
+    Keep this module PURE (no Streamlit, no caching, no side effects).
     """
 
     def __init__(self, model: Optional[str] = None):
@@ -49,7 +49,7 @@ class ValidityAnalyzer:
         merged = self._merge_results(results)
 
         return {
-            "success": merged["success"],
+            "success": merged.get("success", False),
             "analysis": merged.get("analysis"),
             "error": merged.get("error"),
             "chunks_analyzed": len(chunks),
@@ -73,19 +73,38 @@ class ValidityAnalyzer:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "You are a reasoning quality auditor."},
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a reasoning quality auditor. "
+                            "Return ONLY valid JSON. No markdown. No commentary."
+                        ),
+                    },
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0,
+                response_format={"type": "json_object"},  # strict JSON
             )
 
-            raw = response.choices[0].message.content
-            data = json.loads(raw)
+            raw = response.choices[0].message.content or ""
+
+            # Primary: strict parse
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                # Fallback: extract first {...} block if model emits extra text
+                start = raw.find("{")
+                end = raw.rfind("}")
+                if start == -1 or end == -1 or end <= start:
+                    raise ValueError(
+                        f"Model did not return JSON. Raw starts: {raw[:200]!r}"
+                    )
+                data = json.loads(raw[start : end + 1])
 
             return ChunkResult(ok=True, data=data)
 
         except Exception as e:
-            return ChunkResult(ok=False, error=str(e))
+            return ChunkResult(ok=False, error=repr(e))
 
     def _merge_results(self, results: List[ChunkResult]) -> Dict[str, Any]:
         failures: List[Dict[str, Any]] = []
@@ -96,19 +115,24 @@ class ValidityAnalyzer:
             if not r.ok or not r.data:
                 continue
 
-            scores.append(r.data.get("reasoning_score", 0))
-            risks.append(r.data.get("decision_risk", "low"))
+            s = r.data.get("reasoning_score")
+            if isinstance(s, (int, float)):
+                scores.append(int(s))
 
-            failures.extend(r.data.get("failures_detected", []))
+            risks.append(str(r.data.get("decision_risk", "low")).lower())
+
+            fd = r.data.get("failures_detected", [])
+            if isinstance(fd, list):
+                failures.extend(fd)
 
         if not scores:
-            return {
-                "success": False,
-                "error": "All chunks failed to analyze",
-            }
+            first_err = next(
+                (r.error for r in results if r.error),
+                "All chunks failed (no error captured).",
+            )
+            return {"success": False, "error": first_err}
 
         avg_score = round(sum(scores) / len(scores))
-
         highest_risk = self._max_risk(risks)
 
         return {
@@ -118,6 +142,7 @@ class ValidityAnalyzer:
                 "decision_risk": highest_risk,
                 "failures_detected": failures[:25],
                 "total_failures_detected": len(failures),
+                "top_risk_flags": self._top_risk_flags(failures),
             },
         }
 
@@ -125,7 +150,7 @@ class ValidityAnalyzer:
         if len(text) <= self.max_chunk_chars:
             return [text]
 
-        chunks = []
+        chunks: List[str] = []
         start = 0
 
         while start < len(text):
@@ -137,5 +162,30 @@ class ValidityAnalyzer:
 
     @staticmethod
     def _max_risk(risks: List[str]) -> str:
-        order = ["low", "medium", "high", "critical"]
-        return max(risks, key=lambda r: order.index(r) if r in order else 0)
+        order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+        best = "low"
+        best_val = -1
+        for r in risks:
+            val = order.get(str(r).strip().lower(), 0)
+            if val > best_val:
+                best_val = val
+                best = str(r).strip().lower()
+        return best
+
+    @staticmethod
+    def _top_risk_flags(failures: List[Dict[str, Any]]) -> List[str]:
+        flags: List[str] = []
+        for f in failures:
+            t = f.get("type")
+            if isinstance(t, str) and t:
+                flags.append(t)
+
+        seen = set()
+        out: List[str] = []
+        for x in flags:
+            if x not in seen:
+                seen.add(x)
+                out.append(x)
+            if len(out) >= 5:
+                break
+        return out
