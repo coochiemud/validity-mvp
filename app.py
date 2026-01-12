@@ -1,441 +1,452 @@
 # analyzer.py
-from __future__ import annotations
-
+from openai import OpenAI
 import json
 import os
 import re
 import time
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
-
-from openai import OpenAI
 from dotenv import load_dotenv
-
 from prompts import build_prompt
+from failure_library import REASONING_FAILURES, ALLOWED_FAILURE_TYPES
 
 load_dotenv()
 
-
-@dataclass
-class ChunkResult:
-    ok: bool
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-
-
 class ValidityAnalyzer:
-    """
-    ValidityAnalyzer
-    - Calls OpenAI with a strict JSON response format
-    - Splits long documents into chunks
-    - Merges chunk-level analyses into one combined report
-    - Returns a stable result object expected by app.py
-    """
-
     def __init__(self):
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "OPENAI_API_KEY not found. Set it as an environment variable or Streamlit secret."
-            )
-
-        self.client = OpenAI(api_key=api_key)
-
-        # Let Streamlit Secrets / env override model name
+        self.client = OpenAI(
+            api_key=os.getenv("OPENAI_API_KEY")
+        )
         self.model = os.getenv("MODEL_NAME", "gpt-4o")
-
-        # Chunking + safety
-        self.MAX_DOC_CHARS = 80_000          # app.py already enforces this
-        self.CHUNK_SIZE_CHARS = 18_000       # keep prompts safe
-        self.CHUNK_OVERLAP_CHARS = 800
-
-        # “Return all failures” mode
-        self.RETURN_ALL_FAILURES = True
-        self.MAX_FAILURES_HARD_CAP = 200     # prevents insane outputs
-
-    # -----------------------------
-    # Public API expected by app.py
-    # -----------------------------
-    def analyze(self, document_text: str) -> Dict[str, Any]:
-        t0 = time.time()
-
-        document_text = self._normalize_text(document_text)
-        if not document_text or len(document_text.strip()) < 50:
-            return self._fail("Document too short to analyze.")
-
-        chunks = self._chunk_text(document_text)
-        chunk_results: List[ChunkResult] = []
-
-        for idx, chunk in enumerate(chunks, start=1):
-            try:
-                prompt = build_prompt(chunk)
-                data = self._call_openai_json(prompt)
-                chunk_results.append(ChunkResult(ok=True, data=data))
-            except Exception as e:
-                chunk_results.append(ChunkResult(ok=False, error=f"Chunk {idx}: {e}"))
-
-        ok_chunks = [cr for cr in chunk_results if cr.ok and cr.data]
-        failed_chunks = [cr for cr in chunk_results if not cr.ok]
-
-        if not ok_chunks:
-            # IMPORTANT: surface the first couple of errors so you can debug
-            sample_errors = [cr.error for cr in failed_chunks[:3] if cr.error]
-            return {
-                "success": False,
-                "error": "All chunks failed to analyze",
-                "analysis": None,
-                "chunks_analyzed": len(chunks),
-                "chunks_succeeded": 0,
-                "chunks_failed": len(chunks),
-                "analysis_time": int(time.time() - t0),
-                "debug_errors": sample_errors,
-            }
-
-        combined = self._merge_analyses([cr.data for cr in ok_chunks if cr.data])
-
-        analysis_time = int(time.time() - t0)
-        return {
-            "success": True,
-            "analysis": combined,
-            "chunks_analyzed": len(chunks),
-            "chunks_succeeded": len(ok_chunks),
-            "chunks_failed": len(failed_chunks),
-            "analysis_time": analysis_time,
-        }
-
-    def format_output(self, result: Dict[str, Any]) -> str:
-        if not result["success"]:
-    st.error(f"Analysis failed: {result.get('error', 'Unknown error')}")
-    debug = result.get("debug_errors")
-    if debug:
-        st.caption("Debug (first errors):")
-        st.code("\n".join([d for d in debug if d]), language=None)
-\n\nDebug: {result.get('debug_errors','')}\n"
-
-        a = result["analysis"]
-        lines = []
-        lines.append("VALIDITY — Reasoning Quality Report")
-        lines.append("=" * 34)
-        lines.append("")
-
-        thesis = a.get("thesis", {})
-        lines.append("THESIS")
-        lines.append(f"- Statement: {thesis.get('statement','')}")
-        lines.append(f"- Explicitness: {thesis.get('explicitness','')}")
-        lines.append("")
-
-        lines.append("CLAIMS")
-        for i, c in enumerate(a.get("claims", []), start=1):
-            lines.append(f"{i}. {c.get('claim','')}")
-            lines.append(f"   - Support: {c.get('support_type','')}")
-            d = c.get("details")
-            if d:
-                lines.append(f"   - Notes: {d}")
-        lines.append("")
-
-        lc = a.get("logical_chain", {})
-        lines.append("LOGICAL CHAIN")
-        for s in lc.get("steps", []):
-            lines.append(f"- {s}")
-        if lc.get("breaks"):
-            lines.append("Breaks:")
-            for b in lc.get("breaks", []):
-                lines.append(f"- {b}")
-        lines.append("")
-
-        fails = a.get("failures_detected", [])
-        lines.append(f"FAILURES DETECTED ({len(fails)})")
-        for i, f in enumerate(fails, start=1):
-            lines.append(f"{i}. {f.get('type','')}")
-            lines.append(f"   - Location: {f.get('location','')}")
-            lines.append(f"   - Why: {f.get('explanation','')}")
-        lines.append("")
-
-        lines.append("COUNTERFACTUAL TESTS")
-        for t in a.get("counterfactual_tests", []):
-            lines.append(f"- Assumption: {t.get('assumption','')}")
-            lines.append(f"  Impact: {t.get('impact_if_wrong','')}")
-        lines.append("")
-
-        lines.append("ASSUMPTION SENSITIVITY")
-        for s in a.get("assumption_sensitivity", []):
-            lines.append(f"- Rank {s.get('impact_rank','')}: {s.get('assumption','')}")
-            lines.append(f"  Reason: {s.get('reasoning','')}")
-        lines.append("")
-
-        lines.append("STRENGTHS")
-        for s in a.get("strengths_detected", []):
-            lines.append(f"- {s.get('type','')}: {s.get('description','')}")
-        lines.append("")
-
-        oa = a.get("overall_assessment", {})
-        lines.append("OVERALL ASSESSMENT")
-        lines.append(f"- Confidence: {oa.get('confidence','')}")
-        lines.append(f"- Summary: {oa.get('summary','')}")
-        lines.append("")
-
-        return "\n".join(lines)
-
-    # -----------------------------
-    # Internals
-    # -----------------------------
+        
+        # Production limits
+        self.MAX_FAILURES_RETURNED = 10
+        self.MAX_SYNTHESIS_ITEMS = 5
+    
     def _normalize_text(self, text: str) -> str:
+        """Clean up input text"""
         text = text.replace("\x00", "")
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
+    
+    def _clean_json_response(self, text: str) -> str:
+        """Remove markdown code fences and clean response"""
+        cleaned = text.strip()
+        
+        if cleaned.startswith("```json"):
+            cleaned = cleaned[7:]
+        elif cleaned.startswith("```"):
+            cleaned = cleaned[3:]
+        
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        
+        return cleaned.strip()
+    
+    def _repair_json(self, bad_json: str) -> str:
+        """Attempt to repair invalid JSON using OpenAI (one attempt only)"""
+        repair_prompt = f"""The following is invalid JSON. Fix it and return ONLY valid JSON matching the original structure.
 
-    def _chunk_text(self, text: str) -> List[str]:
-        if len(text) <= self.CHUNK_SIZE_CHARS:
-            return [text]
+Rules:
+- Return ONLY the JSON object
+- No commentary
+- No markdown code fences
+- Fix any syntax errors (trailing commas, quotes, etc)
 
-        chunks = []
-        start = 0
-        n = len(text)
+INVALID JSON:
+{bad_json}
 
-        while start < n:
-            end = min(start + self.CHUNK_SIZE_CHARS, n)
-            chunk = text[start:end]
-
-            # add overlap for continuity
-            if end < n:
-                overlap_start = max(0, end - self.CHUNK_OVERLAP_CHARS)
-                chunk = text[start:end]  # main
-                # next chunk will start earlier due to overlap
-                next_start = overlap_start
-            else:
-                next_start = n
-
-            chunks.append(chunk)
-            if next_start <= start:
-                break
-            start = next_start
-
-        return chunks
-
-    def _call_openai_json(self, prompt: str) -> Dict[str, Any]:
-        """
-        Strict JSON output.
-        If the model still returns extra text (rare), we attempt to extract the JSON object.
-        """
-        resp = self.client.chat.completions.create(
+Return the corrected JSON:"""
+        
+        response = self.client.chat.completions.create(
             model=self.model,
-            temperature=0,
-            messages=[
-                {"role": "system", "content": "Return ONLY valid JSON. No markdown. No commentary."},
-                {"role": "user", "content": prompt},
-            ],
-            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": repair_prompt}],
+            max_tokens=4000,
+            temperature=0
         )
-
-        content = resp.choices[0].message.content or ""
-        content = content.strip()
-
-        # With response_format=json_object this should already be valid JSON,
-        # but keep a belt-and-suspenders parser anyway.
-        try:
-            return json.loads(content)
-        except json.JSONDecodeError:
-            extracted = self._extract_first_json_object(content)
-            if not extracted:
-                raise ValueError(f"Model did not return valid JSON. Raw: {content[:400]}")
-            return json.loads(extracted)
-
-    def _extract_first_json_object(self, text: str) -> Optional[str]:
-        """
-        Finds the first top-level JSON object in a string by brace matching.
-        """
-        start = text.find("{")
-        if start == -1:
-            return None
-
-        depth = 0
-        for i in range(start, len(text)):
-            if text[i] == "{":
-                depth += 1
-            elif text[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    return text[start : i + 1]
-        return None
-
-    def _merge_analyses(self, analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Merge strategy:
-        - thesis: first non-empty
-        - claims: concat, lightly dedupe by claim text
-        - logical_chain: concat steps, concat breaks
-        - failures_detected: concat, dedupe by (type, location)
-        - counterfactual_tests: concat, dedupe by assumption
-        - assumption_sensitivity: take best ranked items, re-rank
-        - strengths_detected: concat, dedupe by (type, description)
-        - overall_assessment: prefer first, but if missing build minimal
-        """
-
-        def first_non_empty(path: str) -> Any:
-            for a in analyses:
-                v = a
-                for key in path.split("."):
-                    v = v.get(key, None) if isinstance(v, dict) else None
-                if v:
-                    return v
-            return None
-
-        thesis = first_non_empty("thesis") or {"statement": "", "explicitness": "unclear"}
-
-        claims_all = []
-        seen_claims = set()
-        for a in analyses:
-            for c in a.get("claims", []) or []:
-                ct = (c.get("claim") or "").strip()
-                if not ct:
-                    continue
-                key = ct.lower()
-                if key in seen_claims:
-                    continue
-                seen_claims.add(key)
-                claims_all.append(c)
-
-        lc_steps = []
-        lc_breaks = []
-        lc_conclusion = ""
-        for a in analyses:
-            lc = a.get("logical_chain", {}) or {}
-            for s in lc.get("steps", []) or []:
-                if s and s not in lc_steps:
-                    lc_steps.append(s)
-            for b in lc.get("breaks", []) or []:
-                if b and b not in lc_breaks:
-                    lc_breaks.append(b)
-            if not lc_conclusion and lc.get("conclusion"):
-                lc_conclusion = lc.get("conclusion")
-
-        failures_all = []
-        seen_fail = set()
-        for a in analyses:
-            for f in a.get("failures_detected", []) or []:
-                ftype = (f.get("type") or "").strip()
-                loc = (f.get("location") or "").strip()
-                if not ftype or not loc:
-                    continue
-                key = (ftype.lower(), loc.lower())
-                if key in seen_fail:
-                    continue
-                seen_fail.add(key)
-                failures_all.append(f)
-
-        if self.RETURN_ALL_FAILURES and len(failures_all) > self.MAX_FAILURES_HARD_CAP:
-            failures_all = failures_all[: self.MAX_FAILURES_HARD_CAP]
-
-        counter_all = []
-        seen_assump = set()
-        for a in analyses:
-            for t in a.get("counterfactual_tests", []) or []:
-                ass = (t.get("assumption") or "").strip()
-                if not ass:
-                    continue
-                key = ass.lower()
-                if key in seen_assump:
-                    continue
-                seen_assump.add(key)
-                counter_all.append(t)
-
-        sens_all = []
-        seen_sens = set()
-        for a in analyses:
-            for s in a.get("assumption_sensitivity", []) or []:
-                ass = (s.get("assumption") or "").strip()
-                if not ass:
-                    continue
-                key = ass.lower()
-                if key in seen_sens:
-                    continue
-                seen_sens.add(key)
-                sens_all.append(s)
-
-        # Sort by impact_rank if present, else keep order; then renumber cleanly
-        def rank_val(x: Dict[str, Any]) -> int:
-            r = x.get("impact_rank")
-            try:
-                return int(r)
-            except Exception:
-                return 9999
-
-        sens_all.sort(key=rank_val)
-        for i, s in enumerate(sens_all, start=1):
-            s["impact_rank"] = i
-
-        strengths_all = []
-        seen_strength = set()
-        for a in analyses:
-            for s in a.get("strengths_detected", []) or []:
-                st = (s.get("type") or "").strip()
-                desc = (s.get("description") or "").strip()
-                if not st or not desc:
-                    continue
-                key = (st.lower(), desc.lower())
-                if key in seen_strength:
-                    continue
-                seen_strength.add(key)
-                strengths_all.append(s)
-
-        overall = first_non_empty("overall_assessment") or {
-            "confidence": "medium",
-            "summary": "Aggregate reasoning assessment compiled across document sections."
-        }
-
-        combined = {
-            "thesis": thesis,
-            "claims": claims_all,
-            "logical_chain": {
-                "steps": lc_steps,
-                "conclusion": lc_conclusion,
-                "breaks": lc_breaks,
-            },
-            "failures_detected": failures_all,
-            "total_failures_detected": len(failures_all),
-            "top_risk_flags": self._top_flags_from_failures(failures_all),
-            "decision_risk": self._decision_risk_from_failures(failures_all),
-            "counterfactual_tests": counter_all,
-            "assumption_sensitivity": sens_all,
-            "strengths_detected": strengths_all,
-            "overall_assessment": overall,
-            "reasoning_score": self._score_from_failures(failures_all),
-        }
-
-        return combined
-
-    def _decision_risk_from_failures(self, failures: List[Dict[str, Any]]) -> str:
-        # Simple heuristic; you can refine later
-        n = len(failures)
-        if n >= 10:
-            return "high"
-        if n >= 3:
-            return "medium"
-        return "low"
-
-    def _score_from_failures(self, failures: List[Dict[str, Any]]) -> int:
-        # Simple starting heuristic: 100 - (10 * failures), bounded
-        score = 100 - (10 * len(failures))
-        return max(0, min(100, score))
-
-    def _top_flags_from_failures(self, failures: List[Dict[str, Any]]) -> List[str]:
-        # Return the most frequent failure types (up to 5)
-        counts: Dict[str, int] = {}
+        
+        repaired = response.choices[0].message.content
+        return self._clean_json_response(repaired)
+    
+    def _enforce_allowed_failure_types(self, failures) -> list:
+        """Drop any failures not in allowed taxonomy, with type safety"""
+        if not isinstance(failures, list):
+            return []
+        return [
+            f for f in failures 
+            if isinstance(f, dict) and f.get("type") in ALLOWED_FAILURE_TYPES
+        ]
+    
+    def _normalize_failures(self, failures: list) -> list:
+        """Override severity/actionability from taxonomy"""
+        normalized = []
         for f in failures:
-            t = (f.get("type") or "").strip()
-            if not t:
-                continue
-            counts[t] = counts.get(t, 0) + 1
-        ranked = sorted(counts.items(), key=lambda x: x[1], reverse=True)
-        return [k for (k, _) in ranked[:5]]
-
-    def _fail(self, msg: str) -> Dict[str, Any]:
-        return {
-            "success": False,
-            "error": msg,
-            "analysis": None,
-            "chunks_analyzed": 0,
-            "chunks_succeeded": 0,
-            "chunks_failed": 0,
-            "analysis_time": 0,
+            ftype = f.get("type")
+            if ftype in REASONING_FAILURES:
+                f["severity"] = REASONING_FAILURES[ftype]["severity"]
+                f["actionability"] = REASONING_FAILURES[ftype]["actionability"]
+            normalized.append(f)
+        return normalized
+    
+    def _severity_rank(self, sev: str) -> int:
+        return {"critical": 3, "high": 2, "medium": 1}.get(sev, 0)
+    
+    def _sorted_failures(self, failures: list) -> list:
+        """Sort failures by severity then type"""
+        return sorted(
+            failures,
+            key=lambda f: (-self._severity_rank(f.get("severity", "medium")), f.get("type", "")),
+        )
+    
+    def _compute_score(self, failures: list) -> int:
+        """Deterministic reasoning score based on failures"""
+        score = 100
+        for f in failures:
+            sev = f.get("severity", "medium")
+            if sev == "critical":
+                score -= 35
+            elif sev == "high":
+                score -= 20
+            elif sev == "medium":
+                score -= 10
+        return max(0, min(100, score))
+    
+    def _compute_decision_risk(self, failures: list) -> str:
+        """Deterministic risk level based on failures"""
+        if any(f.get("severity") == "critical" for f in failures):
+            return "critical"
+        
+        high_count = sum(1 for f in failures if f.get("severity") == "high")
+        if high_count >= 3:
+            return "high"
+        elif high_count >= 1:
+            return "medium"
+        
+        medium_count = sum(1 for f in failures if f.get("severity") == "medium")
+        if medium_count >= 5:
+            return "medium"
+        elif medium_count >= 2:
+            return "low"
+        
+        return "low" if failures else "low"
+    
+    def _compute_review_priority(self, failures: list) -> dict:
+        """Categorize failures by action priority"""
+        priorities = {
+            "must_fix": [],
+            "should_fix": [],
+            "nice_to_have": []
         }
+        
+        for f in failures:
+            sev = f.get("severity", "medium")
+            if sev == "critical":
+                priorities["must_fix"].append(f)
+            elif sev == "high":
+                priorities["should_fix"].append(f)
+            else:
+                priorities["nice_to_have"].append(f)
+        
+        return priorities
+    
+    def _chunk_document(self, document: str, max_words: int = 2000) -> list:
+        """Split document into chunks for long documents"""
+        words = document.split()
+        
+        if len(words) <= max_words:
+            return [document]
+        
+        chunks = []
+        current_chunk = []
+        
+        for word in words:
+            current_chunk.append(word)
+            if len(current_chunk) >= max_words:
+                chunks.append(" ".join(current_chunk))
+                current_chunk = []
+        
+        if current_chunk:
+            chunks.append(" ".join(current_chunk))
+        
+        return chunks
+    
+    def _analyze_chunk(self, chunk: str) -> dict:
+        """Analyze a single chunk (with fallback on parse failure)"""
+        prompt = build_prompt(chunk)
+        
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=4000,
+            temperature=0
+        )
+        
+        response_text = response.choices[0].message.content
+        cleaned = self._clean_json_response(response_text)
+        
+        try:
+            analysis = json.loads(cleaned)
+            return analysis
+        except json.JSONDecodeError:
+            # Try repair once
+            try:
+                repaired = self._repair_json(cleaned)
+                analysis = json.loads(repaired)
+                return analysis
+            except Exception:
+                # Return minimal valid structure with parse_failed flag
+                return {
+                    "thesis": {"statement": "Parse failed", "explicitness": "unclear"},
+                    "claims": [],
+                    "logical_chain": {"steps": [], "conclusion": "", "breaks": []},
+                    "failures_detected": [],
+                    "counterfactual_tests": [],
+                    "assumption_sensitivity": [],
+                    "strengths_detected": [],
+                    "overall_assessment": {"confidence": "low", "summary": "Parse error occurred"},
+                    "_meta": {"parse_failed": True}
+                }
+    
+    def _synthesize(self, chunk_results: list) -> dict:
+        """Merge multiple chunk analyses into one coherent result"""
+        # Filter out _meta fields before synthesis
+        clean_chunks = []
+        for chunk in chunk_results:
+            clean_chunk = {k: v for k, v in chunk.items() if k != "_meta"}
+            clean_chunks.append(clean_chunk)
+        
+        if len(clean_chunks) == 1:
+            result = clean_chunks[0]
+        else:
+            prompt = f"""You are merging multiple Validity chunk analyses into ONE final analysis.
+
+Rules:
+- Return ONLY valid JSON matching the schema
+- Deduplicate claims and failures (keep unique, highest-signal items)
+- Choose a single best thesis statement
+- Keep only the most defensible, highest-signal items
+- No commentary, no markdown
+
+CHUNK_RESULTS:
+{json.dumps(clean_chunks, indent=2)}
+
+Return the synthesized JSON:"""
+            
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=4000,
+                temperature=0
+            )
+            
+            cleaned = self._clean_json_response(response.choices[0].message.content)
+            
+            try:
+                result = json.loads(cleaned)
+            except json.JSONDecodeError:
+                try:
+                    repaired = self._repair_json(cleaned)
+                    result = json.loads(repaired)
+                except Exception:
+                    # Fallback: use first chunk if synthesis fails
+                    result = clean_chunks[0]
+        
+        # Apply all normalization and computation
+        failures = result.get("failures_detected", [])
+        failures = self._enforce_allowed_failure_types(failures)
+        failures = self._normalize_failures(failures)
+        failures = self._sorted_failures(failures)
+        
+        # Track total before capping
+        total_failures = len(failures)
+        
+        # Cap to top N failures
+        failures = failures[:self.MAX_FAILURES_RETURNED]
+        result["failures_detected"] = failures
+        result["total_failures_detected"] = total_failures
+        
+        # Compute deterministic fields
+        result["reasoning_score"] = self._compute_score(failures)
+        result["decision_risk"] = self._compute_decision_risk(failures)
+        result["review_priorities"] = self._compute_review_priority(failures)
+        result["top_risk_flags"] = [f["type"] for f in failures[:3]]
+        
+        # Cap other arrays
+        if "claims" in result:
+            result["claims"] = result["claims"][:self.MAX_SYNTHESIS_ITEMS * 2]
+        if "counterfactual_tests" in result:
+            result["counterfactual_tests"] = result["counterfactual_tests"][:self.MAX_SYNTHESIS_ITEMS]
+        if "assumption_sensitivity" in result:
+            result["assumption_sensitivity"] = result["assumption_sensitivity"][:self.MAX_SYNTHESIS_ITEMS]
+        if "strengths_detected" in result:
+            result["strengths_detected"] = result["strengths_detected"][:self.MAX_SYNTHESIS_ITEMS]
+        
+        return result
+    
+    def _validate_schema(self, analysis: dict) -> bool:
+        """Validate the analysis has required fields"""
+        required = [
+            "thesis", "claims", "failures_detected", 
+            "overall_assessment", "decision_risk", "reasoning_score"
+        ]
+        
+        if not all(k in analysis for k in required):
+            return False
+        
+        if analysis["decision_risk"] not in ["critical", "high", "medium", "low"]:
+            return False
+        
+        if not isinstance(analysis["reasoning_score"], (int, float)):
+            return False
+        
+        return True
+    
+    def analyze(self, document: str, timeout_seconds: int = 60) -> dict:
+        """
+        Analyzes a document for reasoning quality.
+        Returns structured analysis as a dictionary.
+        Handles long documents via chunking with timeout protection.
+        """
+        start_time = time.time()
+        
+        try:
+            document = self._normalize_text(document)
+            
+            if len(document) < 50:
+                return {
+                    "success": False,
+                    "error": "Document too short (minimum 50 characters)"
+                }
+            
+            chunks = self._chunk_document(document, max_words=2000)
+            
+            chunk_results = []
+            chunk_failures = 0
+            
+            for i, chunk in enumerate(chunks, start=1):
+                # Check timeout
+                if time.time() - start_time > timeout_seconds:
+                    return {
+                        "success": False,
+                        "error": f"Analysis timeout after {timeout_seconds}s (succeeded {len(chunk_results)}/{len(chunks)} chunks)"
+                    }
+                
+                try:
+                    result = self._analyze_chunk(chunk)
+                    
+                    # Check if parse failed - if so, count it but don't append
+                    if isinstance(result, dict) and result.get("_meta", {}).get("parse_failed"):
+                        chunk_failures += 1
+                        continue
+                    
+                    chunk_results.append(result)
+                    
+                except Exception:
+                    chunk_failures += 1
+                    continue
+            
+            if not chunk_results:
+                return {
+                    "success": False,
+                    "error": "All chunks failed to analyze"
+                }
+            
+            analysis = self._synthesize(chunk_results)
+            
+            if not self._validate_schema(analysis):
+                return {
+                    "success": False,
+                    "error": "Analysis failed schema validation"
+                }
+            
+            return {
+                "success": True,
+                "analysis": analysis,
+                "chunks_analyzed": len(chunks),
+                "chunks_succeeded": len(chunk_results),
+                "chunks_failed": chunk_failures,
+                "analysis_time": round(time.time() - start_time, 2)
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def format_output(self, analysis: dict) -> str:
+        """Formats the analysis into human-readable text"""
+        if not analysis.get("success"):
+            return f"❌ Analysis failed: {analysis.get('error')}"
+        
+        data = analysis["analysis"]
+        
+        output = []
+        output.append("=" * 80)
+        output.append("VALIDITY REASONING ANALYSIS")
+        output.append("=" * 80)
+        output.append("")
+        
+        # SUMMARY
+        output.append("📊 SUMMARY")
+        output.append(f"   Reasoning Score: {data.get('reasoning_score', 'N/A')}/100")
+        output.append(f"   Decision Risk: {data.get('decision_risk', 'N/A').upper()}")
+        
+        top_flags = data.get('top_risk_flags', [])
+        if top_flags:
+            flags_formatted = [f.replace('_', ' ').title() for f in top_flags]
+            output.append(f"   Top Risk Flags: {', '.join(flags_formatted)}")
+        
+        chunks = analysis.get('chunks_analyzed', 1)
+        if chunks > 1:
+            output.append(f"   (Analyzed in {chunks} sections)")
+        
+        output.append("")
+        output.append("=" * 80)
+        output.append("")
+        
+        # REVIEW PRIORITIES
+        priorities = data.get('review_priorities', {})
+        if priorities:
+            output.append("🎯 REVIEW PRIORITIES")
+            
+            must_fix = priorities.get('must_fix', [])
+            if must_fix:
+                output.append(f"   🔴 MUST FIX ({len(must_fix)} critical)")
+                for f in must_fix[:3]:
+                    output.append(f"      - {f['type'].replace('_', ' ').title()}")
+            
+            should_fix = priorities.get('should_fix', [])
+            if should_fix:
+                output.append(f"   🟠 SHOULD FIX ({len(should_fix)} high-severity)")
+            
+            nice_to_have = priorities.get('nice_to_have', [])
+            if nice_to_have:
+                output.append(f"   🟡 NICE TO HAVE ({len(nice_to_have)} medium)")
+            
+            output.append("")
+        
+        # DETAILED FAILURES
+        failures = data.get('failures_detected', [])
+        total_failures = data.get('total_failures_detected', len(failures))
+        
+        if failures:
+            header = f"🚨 DETAILED FINDINGS ({len(failures)} shown"
+            if total_failures > len(failures):
+                header += f" of {total_failures} total"
+            header += ")"
+            output.append(header)
+            
+            for i, failure in enumerate(failures, 1):
+                severity_icon = "🔴" if failure['severity'] == "critical" else "🟠" if failure['severity'] == "high" else "🟡"
+                action = failure.get('actionability', 'review').upper()
+                
+                output.append(f"   {i}. {severity_icon} {failure['type'].upper().replace('_', ' ')} [{action}]")
+                output.append(f"      Location: {failure.get('location', 'Not specified')}")
+                output.append(f"      Issue: {failure.get('explanation', 'No explanation')}")
+                output.append("")
+        else:
+            output.append("✅ No reasoning failures detected")
+            output.append("")
+        
+        output.append("=" * 80)
+        
+        return "\n".join(output)
