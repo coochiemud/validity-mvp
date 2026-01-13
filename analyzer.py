@@ -13,13 +13,22 @@ load_dotenv()
 class ValidityAnalyzer:
     def __init__(self):
         # Try Streamlit secrets first, fall back to environment variable
+        api_key = None
+        model_name = "gpt-4o"
+        
         try:
             import streamlit as st
             api_key = st.secrets.get("OPENAI_API_KEY")
             model_name = st.secrets.get("MODEL_NAME", "gpt-4o")
-        except:
+            print(f"DEBUG: Loaded from Streamlit secrets. API key exists: {api_key is not None}")
+        except Exception as e:
+            print(f"DEBUG: Streamlit secrets failed: {e}")
             api_key = os.getenv("OPENAI_API_KEY")
             model_name = os.getenv("MODEL_NAME", "gpt-4o")
+            print(f"DEBUG: Loaded from env. API key exists: {api_key is not None}")
+        
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY not found in Streamlit secrets or environment variables")
         
         self.client = OpenAI(api_key=api_key)
         self.model = model_name
@@ -118,7 +127,6 @@ Return the corrected JSON:"""
             elif sev == "medium":
                 score -= 10
         
-        # Ensure we return a valid score
         final_score = max(0, min(100, score))
         return final_score
     
@@ -199,13 +207,11 @@ Return the corrected JSON:"""
             analysis = json.loads(cleaned)
             return analysis
         except json.JSONDecodeError:
-            # Try repair once
             try:
                 repaired = self._repair_json(cleaned)
                 analysis = json.loads(repaired)
                 return analysis
             except Exception:
-                # Return minimal valid structure with parse_failed flag
                 return {
                     "thesis": {"statement": "Parse failed", "explicitness": "unclear"},
                     "claims": [],
@@ -220,7 +226,6 @@ Return the corrected JSON:"""
     
     def _synthesize(self, chunk_results: list) -> dict:
         """Merge multiple chunk analyses into one coherent result"""
-        # Filter out _meta fields before synthesis
         clean_chunks = []
         for chunk in chunk_results:
             clean_chunk = {k: v for k, v in chunk.items() if k != "_meta"}
@@ -259,30 +264,24 @@ Return the synthesized JSON:"""
                     repaired = self._repair_json(cleaned)
                     result = json.loads(repaired)
                 except Exception:
-                    # Fallback: use first chunk if synthesis fails
                     result = clean_chunks[0]
         
-        # Apply all normalization and computation
         failures = result.get("failures_detected", [])
         failures = self._enforce_allowed_failure_types(failures)
         failures = self._normalize_failures(failures)
         failures = self._sorted_failures(failures)
         
-        # Track total before capping
         total_failures = len(failures)
         
-        # Cap to top N failures
         failures = failures[:self.MAX_FAILURES_RETURNED]
         result["failures_detected"] = failures
         result["total_failures_detected"] = total_failures
         
-        # Compute deterministic fields
         result["reasoning_score"] = self._compute_score(failures)
         result["decision_risk"] = self._compute_decision_risk(failures)
         result["review_priorities"] = self._compute_review_priority(failures)
         result["top_risk_flags"] = [f["type"] for f in failures[:3]]
         
-        # Cap other arrays
         if "claims" in result:
             result["claims"] = result["claims"][:self.MAX_SYNTHESIS_ITEMS * 2]
         if "counterfactual_tests" in result:
@@ -313,11 +312,7 @@ Return the synthesized JSON:"""
         return True
     
     def analyze(self, document: str, timeout_seconds: int = 60) -> dict:
-        """
-        Analyzes a document for reasoning quality.
-        Returns structured analysis as a dictionary.
-        Handles long documents via chunking with timeout protection.
-        """
+        """Analyzes a document for reasoning quality"""
         start_time = time.time()
         
         try:
@@ -335,7 +330,6 @@ Return the synthesized JSON:"""
             chunk_failures = 0
             
             for i, chunk in enumerate(chunks, start=1):
-                # Check timeout
                 if time.time() - start_time > timeout_seconds:
                     return {
                         "success": False,
@@ -345,7 +339,6 @@ Return the synthesized JSON:"""
                 try:
                     result = self._analyze_chunk(chunk)
                     
-                    # Check if parse failed - if so, count it but don't append
                     if isinstance(result, dict) and result.get("_meta", {}).get("parse_failed"):
                         chunk_failures += 1
                         continue
@@ -398,7 +391,6 @@ Return the synthesized JSON:"""
         output.append("=" * 80)
         output.append("")
         
-        # SUMMARY
         output.append("📊 SUMMARY")
         output.append(f"   Reasoning Score: {data.get('reasoning_score', 'N/A')}/100")
         output.append(f"   Decision Risk: {data.get('decision_risk', 'N/A').upper()}")
@@ -416,7 +408,6 @@ Return the synthesized JSON:"""
         output.append("=" * 80)
         output.append("")
         
-        # REVIEW PRIORITIES
         priorities = data.get('review_priorities', {})
         if priorities:
             output.append("🎯 REVIEW PRIORITIES")
@@ -437,7 +428,6 @@ Return the synthesized JSON:"""
             
             output.append("")
         
-        # DETAILED FAILURES
         failures = data.get('failures_detected', [])
         total_failures = data.get('total_failures_detected', len(failures))
         
