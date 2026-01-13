@@ -12,10 +12,20 @@ load_dotenv()
 
 class ValidityAnalyzer:
     def __init__(self):
-        self.client = OpenAI(
-            api_key=os.getenv("OPENAI_API_KEY")
-        )
-        self.model = os.getenv("MODEL_NAME", "gpt-4o")
+        # Try Streamlit secrets first, fall back to environment variable
+   try:
+       import streamlit as st
+       api_key = st.secrets.get("OPENAI_API_KEY")
+   except:
+       api_key = os.getenv("OPENAI_API_KEY")
+   
+   self.client = OpenAI(api_key=api_key)
+        # Try Streamlit secrets first, fall back to environment variable
+   try:
+       import streamlit as st
+       self.model = st.secrets.get("MODEL_NAME", "gpt-4o")
+   except:
+       self.model = os.getenv("MODEL_NAME", "gpt-4o")
         
         # Production limits
         self.MAX_FAILURES_RETURNED = 10
