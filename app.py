@@ -12,7 +12,7 @@ def stable_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
 
 # -----------------------------
-# Custom CSS for Validity branding
+# Custom CSS for Validity branding - EXACT match to landing page
 # -----------------------------
 st.markdown("""
 <style>
@@ -26,43 +26,202 @@ st.markdown("""
         font-family: 'Inter', sans-serif;
     }
     
+    /* Hide Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    
     /* Headers */
-    h1, h2, h3, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
+    h1, h2, h3 {
         font-family: 'Sora', sans-serif !important;
         color: #f8fafc !important;
         letter-spacing: -0.02em !important;
     }
     
-    h1, .stMarkdown h1 {
-        font-size: 3rem !important;
-        font-weight: 700 !important;
+    /* Text input for password */
+    .stTextInput input {
+        background: rgba(30, 47, 72, 0.4) !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        color: #f8fafc !important;
     }
     
-    h2, .stMarkdown h2 {
-        font-size: 2rem !important;
-        font-weight: 700 !important;
+    /* Validity Analysis Container - matches landing page exactly */
+    .validity-container {
+        background: rgba(22, 34, 56, 0.6);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 16px;
+        padding: 3rem;
+        position: relative;
+        overflow: hidden;
+        backdrop-filter: blur(10px);
+        margin-top: 2rem;
     }
     
-    h3, .stMarkdown h3 {
-        font-size: 1.5rem !important;
-        font-weight: 600 !important;
+    .validity-container::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 4px;
+        background: linear-gradient(90deg, #ef4444, #f59e0b, #10b981);
     }
     
-    /* Text colors */
-    p, .stMarkdown, label, .stMarkdown p {
-        color: #cbd5e1 !important;
+    .output-header {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.15em;
+        color: #94a3b8;
+        margin-bottom: 2.5rem;
+        padding-bottom: 1.5rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     }
     
-    /* Captions */
-    .stCaption {
-        font-family: 'IBM Plex Mono', monospace !important;
-        color: #94a3b8 !important;
-        font-size: 0.75rem !important;
+    .output-meta {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 2rem;
+        margin-bottom: 3rem;
+    }
+    
+    .meta-item {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+    
+    .meta-label {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.75rem;
         text-transform: uppercase;
         letter-spacing: 0.1em;
+        color: #64748b;
     }
     
-    /* Buttons */
+    .meta-value {
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: #f8fafc;
+    }
+    
+    .risk-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        background: rgba(245, 158, 11, 0.15);
+        color: #f59e0b;
+        padding: 0.5rem 1rem;
+        border-radius: 6px;
+        border: 1px solid rgba(245, 158, 11, 0.3);
+        font-size: 0.95rem;
+        width: fit-content;
+    }
+    
+    .score-value {
+        font-size: 2.5rem;
+        font-weight: 700;
+        background: linear-gradient(135deg, #ef4444, #f59e0b);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        line-height: 1;
+    }
+    
+    .score-bar {
+        width: 200px;
+        height: 8px;
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 4px;
+        overflow: hidden;
+        margin-top: 0.5rem;
+    }
+    
+    .score-fill {
+        height: 100%;
+        background: linear-gradient(90deg, #ef4444, #f59e0b);
+        border-radius: 4px;
+    }
+    
+    .issues-section {
+        margin-top: 2.5rem;
+    }
+    
+    .issues-title {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.15em;
+        color: #f8fafc;
+        margin-bottom: 1.5rem;
+        font-weight: 600;
+    }
+    
+    .issue-item {
+        background: rgba(10, 22, 40, 0.5);
+        border-left: 3px solid var(--issue-color);
+        border-radius: 6px;
+        padding: 1.5rem;
+        margin-bottom: 1rem;
+    }
+    
+    .issue-header {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        margin-bottom: 0.75rem;
+    }
+    
+    .severity-badge {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.7rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        padding: 0.35rem 0.75rem;
+        border-radius: 4px;
+    }
+    
+    .severity-high {
+        background: rgba(239, 68, 68, 0.2);
+        color: #ef4444;
+    }
+    
+    .severity-medium {
+        background: rgba(245, 158, 11, 0.2);
+        color: #f59e0b;
+    }
+    
+    .issue-title {
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: #f8fafc;
+        margin: 0;
+    }
+    
+    .issue-description {
+        color: #cbd5e1;
+        line-height: 1.6;
+        font-size: 0.95rem;
+    }
+    
+    /* Input section styling */
+    .stTextArea textarea {
+        background: rgba(30, 47, 72, 0.4) !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        border-radius: 8px !important;
+        color: #f8fafc !important;
+        font-family: 'IBM Plex Mono', monospace !important;
+        font-size: 0.9rem !important;
+    }
+    
+    .stFileUploader {
+        background: rgba(30, 47, 72, 0.4) !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        border-radius: 12px !important;
+        padding: 1.5rem !important;
+    }
+    
     .stButton > button {
         background: rgba(255, 255, 255, 0.08) !important;
         color: #f8fafc !important;
@@ -73,91 +232,12 @@ st.markdown("""
         text-transform: uppercase !important;
         letter-spacing: 0.05em !important;
         font-family: 'Inter', sans-serif !important;
-        transition: all 0.3s ease !important;
+        width: 100% !important;
     }
     
     .stButton > button:hover {
         background: rgba(255, 255, 255, 0.12) !important;
         border-color: rgba(255, 255, 255, 0.6) !important;
-        transform: translateY(-1px);
-    }
-    
-    .stButton > button[kind="primary"] {
-        background: rgba(255, 255, 255, 0.12) !important;
-        border-color: rgba(255, 255, 255, 0.5) !important;
-    }
-    
-    /* File uploader */
-    .stFileUploader {
-        background: rgba(30, 47, 72, 0.4) !important;
-        border: 1px solid rgba(255, 255, 255, 0.08) !important;
-        border-radius: 12px !important;
-        padding: 1.5rem !important;
-    }
-    
-    .stFileUploader label {
-        color: #f8fafc !important;
-        font-weight: 500 !important;
-    }
-    
-    /* Text area */
-    .stTextArea textarea {
-        background: rgba(30, 47, 72, 0.4) !important;
-        border: 1px solid rgba(255, 255, 255, 0.08) !important;
-        border-radius: 8px !important;
-        color: #f8fafc !important;
-        font-family: 'IBM Plex Mono', monospace !important;
-        font-size: 0.9rem !important;
-    }
-    
-    .stTextArea label {
-        color: #f8fafc !important;
-        font-weight: 500 !important;
-    }
-    
-    /* Metrics */
-    [data-testid="stMetricValue"] {
-        font-size: 2.5rem !important;
-        font-weight: 700 !important;
-        color: #f8fafc !important;
-        font-family: 'Sora', sans-serif !important;
-    }
-    
-    [data-testid="stMetricLabel"] {
-        font-family: 'IBM Plex Mono', monospace !important;
-        font-size: 0.75rem !important;
-        text-transform: uppercase !important;
-        letter-spacing: 0.1em !important;
-        color: #64748b !important;
-    }
-    
-    /* Expander */
-    .streamlit-expanderHeader {
-        background: rgba(10, 22, 40, 0.5) !important;
-        border-left: 3px solid #ef4444 !important;
-        border-radius: 6px !important;
-        color: #f8fafc !important;
-        font-weight: 600 !important;
-        font-family: 'Inter', sans-serif !important;
-    }
-    
-    .streamlit-expanderContent {
-        background: rgba(10, 22, 40, 0.3) !important;
-        border-left: 3px solid rgba(239, 68, 68, 0.3) !important;
-        color: #cbd5e1 !important;
-    }
-    
-    /* Info/Success/Error boxes */
-    .stAlert {
-        background: rgba(30, 47, 72, 0.4) !important;
-        border: 1px solid rgba(255, 255, 255, 0.08) !important;
-        border-radius: 8px !important;
-        color: #cbd5e1 !important;
-    }
-    
-    [data-baseweb="notification"] {
-        background: rgba(30, 47, 72, 0.6) !important;
-        border-left: 3px solid #10b981 !important;
     }
     
     /* Tabs */
@@ -174,87 +254,11 @@ st.markdown("""
         font-weight: 600 !important;
         font-size: 1rem !important;
         padding: 1rem 0 !important;
-        border: none !important;
     }
     
     .stTabs [aria-selected="true"] {
         color: #f8fafc !important;
         border-bottom: 2px solid #ef4444 !important;
-    }
-    
-    /* Selectbox */
-    .stSelectbox label {
-        color: #f8fafc !important;
-        font-weight: 500 !important;
-    }
-    
-    .stSelectbox > div > div {
-        background: rgba(30, 47, 72, 0.4) !important;
-        border: 1px solid rgba(255, 255, 255, 0.08) !important;
-        color: #f8fafc !important;
-    }
-    
-    /* Code blocks */
-    .stCodeBlock {
-        background: rgba(22, 34, 56, 0.6) !important;
-        border: 1px solid rgba(255, 255, 255, 0.1) !important;
-        border-radius: 8px !important;
-    }
-    
-    code {
-        color: #cbd5e1 !important;
-        font-family: 'IBM Plex Mono', monospace !important;
-    }
-    
-    /* Divider */
-    hr {
-        border-color: rgba(255, 255, 255, 0.08) !important;
-        margin: 2rem 0 !important;
-    }
-    
-    /* Download button */
-    .stDownloadButton > button {
-        background: rgba(16, 185, 129, 0.15) !important;
-        color: #10b981 !important;
-        border: 1px solid rgba(16, 185, 129, 0.3) !important;
-    }
-    
-    .stDownloadButton > button:hover {
-        background: rgba(16, 185, 129, 0.25) !important;
-        border-color: rgba(16, 185, 129, 0.5) !important;
-    }
-    
-    /* Spinner */
-    .stSpinner > div {
-        border-top-color: #ef4444 !important;
-    }
-    
-    /* Hide Streamlit branding */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-    
-    /* Sidebar styling */
-    [data-testid="stSidebar"] {
-        background: #162238 !important;
-        border-right: 1px solid rgba(255, 255, 255, 0.08) !important;
-    }
-    
-    [data-testid="stSidebar"] h1, 
-    [data-testid="stSidebar"] h2, 
-    [data-testid="stSidebar"] h3 {
-        color: #f8fafc !important;
-    }
-    
-    /* Text input (for password) */
-    .stTextInput input {
-        background: rgba(30, 47, 72, 0.4) !important;
-        border: 1px solid rgba(255, 255, 255, 0.08) !important;
-        color: #f8fafc !important;
-    }
-    
-    .stTextInput label {
-        color: #f8fafc !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -299,10 +303,6 @@ except Exception as e:
     st.exception(e)
     st.stop()
 
-# Optional: quick visibility of what got deployed
-import analyzer as _a
-st.caption(f"Analyzer loaded from: {_a.__file__} | version: {ANALYZER_VERSION}")
-
 # -----------------------------
 # Session state
 # -----------------------------
@@ -329,10 +329,9 @@ with tab1:
     with col1:
         st.subheader("Input Document")
 
-        # Handle file upload FIRST, before text_area
+        # Handle file upload
         uploaded = st.file_uploader("Upload a .txt/.md/.pdf file", type=["txt", "md", "pdf"])
         
-        # Process uploaded file
         uploaded_text = None
         if uploaded:
             if uploaded.type == "application/pdf":
@@ -347,12 +346,10 @@ with tab1:
                     st.error(f"Error reading PDF: {str(e)}")
                     st.stop()
             else:
-                # Handle text files
                 text = uploaded.read().decode("utf-8", errors="ignore")
                 uploaded_text = text
                 st.success(f"✅ File loaded ({len(text)} characters)")
         
-        # Show text area with uploaded content or existing content
         if uploaded_text:
             default_text = uploaded_text
         else:
@@ -365,13 +362,11 @@ with tab1:
             placeholder="Investment memo, legal brief, policy document, etc.",
         )
         
-        # Store the current text
         st.session_state["doc_text"] = doc_input
 
         run = st.button(
             "🔍 Analyze Reasoning",
             type="primary",
-            use_container_width=True,
             disabled=st.session_state["is_running"],
         )
 
@@ -382,7 +377,6 @@ with tab1:
             MAX_CHARS = 80_000
             document_text = st.session_state.get("doc_text", "")
 
-            # Safety reset (prevents "stuck loading" from reruns)
             st.session_state["is_running"] = False
 
             if not document_text or len(document_text.strip()) < 50:
@@ -391,8 +385,7 @@ with tab1:
 
             if len(document_text) > MAX_CHARS:
                 st.error(
-                    f"Document too long ({len(document_text):,} chars). Max is {MAX_CHARS:,}. "
-                    "Trim the input or analyze a smaller section."
+                    f"Document too long ({len(document_text):,} chars). Max is {MAX_CHARS:,}."
                 )
                 st.stop()
 
@@ -406,13 +399,11 @@ with tab1:
 
             if is_cached:
                 result = st.session_state["last_result"]
-                st.caption("⚡ Showing cached result for identical input")
             else:
                 st.session_state["is_running"] = True
                 try:
                     with st.spinner("Analyzing reasoning structure..."):
                         result = analyzer.analyze(document_text)
-
                     st.session_state["last_result"] = result
                     st.session_state["last_doc_hash"] = doc_hash
                 finally:
@@ -420,83 +411,69 @@ with tab1:
 
             if not result.get("success"):
                 st.error(f"Analysis failed: {result.get('error', 'Unknown error')}")
-                # Show debug errors if analyzer provided them
-                dbg = result.get("debug_errors")
-                if dbg:
-                    with st.expander("Debug (first errors)"):
-                        for x in dbg:
-                            st.code(str(x))
                 st.stop()
 
             data = result["analysis"]
-
-            score = data.get("reasoning_score", "N/A")
-            risk = (data.get("decision_risk") or "low").upper()
-
-            if isinstance(score, (int, float)):
-                score_color = "🟢" if score >= 80 else "🟡" if score >= 60 else "🔴"
-            else:
-                score_color = "⚪"
-
-            st.metric("Reasoning Score", f"{score_color} {score}/100")
-
-            risk_colors = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}
-            st.write(f"**Decision Risk:** {risk_colors.get(risk, '⚪')} {risk}")
-
-            flags = data.get("top_risk_flags", [])
-            if flags:
-                flags_formatted = ", ".join([f.replace("_", " ").title() for f in flags])
-                st.write(f"**Top Risk Flags:** {flags_formatted}")
-            else:
-                st.write("**Top Risk Flags:** None")
-
-            chunks_total = result.get("chunks_analyzed", 0)
-            chunks_ok = result.get("chunks_succeeded", 0)
-            chunks_fail = result.get("chunks_failed", 0)
-            analysis_time = result.get("analysis_time", 0)
-
-            if chunks_total > 1:
-                stats = f"Analyzed {chunks_ok}/{chunks_total} sections"
-                if chunks_fail > 0:
-                    stats += f" ({chunks_fail} failed)"
-                stats += f" in {analysis_time}s"
-                st.caption(stats)
-
-            st.divider()
-
+            score = data.get("reasoning_score", 0)
+            risk = (data.get("decision_risk") or "medium").upper()
             failures = data.get("failures_detected", [])
-            total_failures = data.get("total_failures_detected", len(failures))
+
+            # Display in exact landing page format
+            st.markdown(f"""
+            <div class="validity-container">
+                <div class="output-header">VALIDITY ANALYSIS — EXECUTIVE SUMMARY (AUTOMATED LOGIC AUDIT)</div>
+                
+                <div class="output-meta">
+                    <div class="meta-item">
+                        <div class="meta-label">Document Type</div>
+                        <div class="meta-value">Investment Memorandum</div>
+                    </div>
+                    <div class="meta-item">
+                        <div class="meta-label">Risk Classification</div>
+                        <div class="meta-value">
+                            <span class="risk-badge">
+                                <span>⚠️</span>
+                                <span>{risk.title()}</span>
+                            </span>
+                        </div>
+                    </div>
+                    <div class="meta-item">
+                        <div class="meta-label">Reasoning Quality</div>
+                        <div class="meta-value">
+                            <div class="score-value">{score}/100</div>
+                            <div class="score-bar">
+                                <div class="score-fill" style="width: {score}%;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="issues-section">
+                    <div class="issues-title">Critical Issues Identified</div>
+            """, unsafe_allow_html=True)
 
             if not failures:
-                st.success("✅ No reasoning failures detected from taxonomy")
+                st.markdown('<p style="color: #10b981;">✅ No critical reasoning failures detected</p>', unsafe_allow_html=True)
             else:
-                st.write(f"### Findings ({len(failures)} shown of {total_failures} total)")
-                for i, f in enumerate(failures, 1):
+                for i, f in enumerate(failures[:3], 1):  # Show top 3 like landing page
                     sev = (f.get("severity") or "medium").upper()
-                    action = (f.get("actionability") or "review").upper()
                     ftype = (f.get("type") or "").replace("_", " ").title()
-                    location = f.get("location") or "Location not specified"
                     explanation = f.get("explanation") or "No explanation provided"
+                    
+                    border_color = "#ef4444" if sev == "HIGH" or sev == "CRITICAL" else "#f59e0b"
+                    
+                    st.markdown(f"""
+                    <div class="issue-item" style="--issue-color: {border_color};">
+                        <div class="issue-header">
+                            <span class="severity-badge severity-{sev.lower()}">{sev}</span>
+                            <h4 class="issue-title">{ftype}</h4>
+                        </div>
+                        <p class="issue-description">{explanation}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
 
-                    severity_icon = "🔴" if sev == "CRITICAL" else "🟠" if sev == "HIGH" else "🟡"
+            st.markdown("</div></div>", unsafe_allow_html=True)
 
-                    with st.expander(f"{severity_icon} {i}. {ftype} — {sev} — [{action}]"):
-                        st.write("**Location in text:**")
-                        st.info(location)
-                        st.write("**Why this matters:**")
-                        st.write(explanation)
-
-            st.divider()
-
-            with st.expander("📄 View full formatted report"):
-                formatted = analyzer.format_output(result)
-                st.code(formatted, language=None)
-                st.download_button(
-                    label="📥 Download Full Report",
-                    data=formatted,
-                    file_name="validity_analysis.txt",
-                    mime="text/plain",
-                )
         else:
             st.info("👈 Paste a document and click 'Analyze Reasoning' to begin")
 
