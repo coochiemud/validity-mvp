@@ -12,6 +12,254 @@ def stable_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
 
 # -----------------------------
+# Custom CSS for Validity branding
+# -----------------------------
+st.markdown("""
+<style>
+    /* Import fonts */
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&family=Sora:wght@400;600;700&display=swap');
+    
+    /* Main app styling */
+    .stApp {
+        background: #0a1628;
+        color: #f8fafc;
+        font-family: 'Inter', sans-serif;
+    }
+    
+    /* Headers */
+    h1, h2, h3, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
+        font-family: 'Sora', sans-serif !important;
+        color: #f8fafc !important;
+        letter-spacing: -0.02em !important;
+    }
+    
+    h1, .stMarkdown h1 {
+        font-size: 3rem !important;
+        font-weight: 700 !important;
+    }
+    
+    h2, .stMarkdown h2 {
+        font-size: 2rem !important;
+        font-weight: 700 !important;
+    }
+    
+    h3, .stMarkdown h3 {
+        font-size: 1.5rem !important;
+        font-weight: 600 !important;
+    }
+    
+    /* Text colors */
+    p, .stMarkdown, label, .stMarkdown p {
+        color: #cbd5e1 !important;
+    }
+    
+    /* Captions */
+    .stCaption {
+        font-family: 'IBM Plex Mono', monospace !important;
+        color: #94a3b8 !important;
+        font-size: 0.75rem !important;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+    }
+    
+    /* Buttons */
+    .stButton > button {
+        background: rgba(255, 255, 255, 0.08) !important;
+        color: #f8fafc !important;
+        border: 1px solid rgba(255, 255, 255, 0.4) !important;
+        border-radius: 4px !important;
+        padding: 1rem 2rem !important;
+        font-weight: 600 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.05em !important;
+        font-family: 'Inter', sans-serif !important;
+        transition: all 0.3s ease !important;
+    }
+    
+    .stButton > button:hover {
+        background: rgba(255, 255, 255, 0.12) !important;
+        border-color: rgba(255, 255, 255, 0.6) !important;
+        transform: translateY(-1px);
+    }
+    
+    .stButton > button[kind="primary"] {
+        background: rgba(255, 255, 255, 0.12) !important;
+        border-color: rgba(255, 255, 255, 0.5) !important;
+    }
+    
+    /* File uploader */
+    .stFileUploader {
+        background: rgba(30, 47, 72, 0.4) !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        border-radius: 12px !important;
+        padding: 1.5rem !important;
+    }
+    
+    .stFileUploader label {
+        color: #f8fafc !important;
+        font-weight: 500 !important;
+    }
+    
+    /* Text area */
+    .stTextArea textarea {
+        background: rgba(30, 47, 72, 0.4) !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        border-radius: 8px !important;
+        color: #f8fafc !important;
+        font-family: 'IBM Plex Mono', monospace !important;
+        font-size: 0.9rem !important;
+    }
+    
+    .stTextArea label {
+        color: #f8fafc !important;
+        font-weight: 500 !important;
+    }
+    
+    /* Metrics */
+    [data-testid="stMetricValue"] {
+        font-size: 2.5rem !important;
+        font-weight: 700 !important;
+        color: #f8fafc !important;
+        font-family: 'Sora', sans-serif !important;
+    }
+    
+    [data-testid="stMetricLabel"] {
+        font-family: 'IBM Plex Mono', monospace !important;
+        font-size: 0.75rem !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.1em !important;
+        color: #64748b !important;
+    }
+    
+    /* Expander */
+    .streamlit-expanderHeader {
+        background: rgba(10, 22, 40, 0.5) !important;
+        border-left: 3px solid #ef4444 !important;
+        border-radius: 6px !important;
+        color: #f8fafc !important;
+        font-weight: 600 !important;
+        font-family: 'Inter', sans-serif !important;
+    }
+    
+    .streamlit-expanderContent {
+        background: rgba(10, 22, 40, 0.3) !important;
+        border-left: 3px solid rgba(239, 68, 68, 0.3) !important;
+        color: #cbd5e1 !important;
+    }
+    
+    /* Info/Success/Error boxes */
+    .stAlert {
+        background: rgba(30, 47, 72, 0.4) !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        border-radius: 8px !important;
+        color: #cbd5e1 !important;
+    }
+    
+    [data-baseweb="notification"] {
+        background: rgba(30, 47, 72, 0.6) !important;
+        border-left: 3px solid #10b981 !important;
+    }
+    
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 2rem;
+        background: transparent !important;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        background: transparent !important;
+        color: #94a3b8 !important;
+        font-family: 'Inter', sans-serif !important;
+        font-weight: 600 !important;
+        font-size: 1rem !important;
+        padding: 1rem 0 !important;
+        border: none !important;
+    }
+    
+    .stTabs [aria-selected="true"] {
+        color: #f8fafc !important;
+        border-bottom: 2px solid #ef4444 !important;
+    }
+    
+    /* Selectbox */
+    .stSelectbox label {
+        color: #f8fafc !important;
+        font-weight: 500 !important;
+    }
+    
+    .stSelectbox > div > div {
+        background: rgba(30, 47, 72, 0.4) !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        color: #f8fafc !important;
+    }
+    
+    /* Code blocks */
+    .stCodeBlock {
+        background: rgba(22, 34, 56, 0.6) !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border-radius: 8px !important;
+    }
+    
+    code {
+        color: #cbd5e1 !important;
+        font-family: 'IBM Plex Mono', monospace !important;
+    }
+    
+    /* Divider */
+    hr {
+        border-color: rgba(255, 255, 255, 0.08) !important;
+        margin: 2rem 0 !important;
+    }
+    
+    /* Download button */
+    .stDownloadButton > button {
+        background: rgba(16, 185, 129, 0.15) !important;
+        color: #10b981 !important;
+        border: 1px solid rgba(16, 185, 129, 0.3) !important;
+    }
+    
+    .stDownloadButton > button:hover {
+        background: rgba(16, 185, 129, 0.25) !important;
+        border-color: rgba(16, 185, 129, 0.5) !important;
+    }
+    
+    /* Spinner */
+    .stSpinner > div {
+        border-top-color: #ef4444 !important;
+    }
+    
+    /* Hide Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    
+    /* Sidebar styling */
+    [data-testid="stSidebar"] {
+        background: #162238 !important;
+        border-right: 1px solid rgba(255, 255, 255, 0.08) !important;
+    }
+    
+    [data-testid="stSidebar"] h1, 
+    [data-testid="stSidebar"] h2, 
+    [data-testid="stSidebar"] h3 {
+        color: #f8fafc !important;
+    }
+    
+    /* Text input (for password) */
+    .stTextInput input {
+        background: rgba(30, 47, 72, 0.4) !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        color: #f8fafc !important;
+    }
+    
+    .stTextInput label {
+        color: #f8fafc !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# -----------------------------
 # Password protection
 # -----------------------------
 def check_password() -> bool:
