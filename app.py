@@ -1,11 +1,12 @@
 # app.py
 import os
+import io
 import hashlib
 import hmac
-import io
 
 import streamlit as st
 import PyPDF2
+
 
 ANALYZER_VERSION = "openai-2026-01-11-v3"
 TAXONOMY_VERSION = "v3"  # bump when prompts/taxonomy changes
@@ -15,42 +16,43 @@ def stable_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
 
 
+def env_int(key: str, default: int) -> int:
+    try:
+        return int(os.getenv(key, str(default)))
+    except Exception:
+        return default
+
+
 # -----------------------------
 # Custom CSS for Validity branding - EXACT match to landing page
 # -----------------------------
 st.markdown(
     """
 <style>
-    /* Import fonts */
     @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&family=Sora:wght@400;600;700&display=swap');
-    
-    /* Main app styling */
+
     .stApp {
         background: #0a1628;
         color: #f8fafc;
         font-family: 'Inter', sans-serif;
     }
-    
-    /* Hide Streamlit branding */
+
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
-    
-    /* Headers */
+
     h1, h2, h3 {
         font-family: 'Sora', sans-serif !important;
         color: #f8fafc !important;
         letter-spacing: -0.02em !important;
     }
-    
-    /* Text input for password */
+
     .stTextInput input {
         background: rgba(30, 47, 72, 0.4) !important;
         border: 1px solid rgba(255, 255, 255, 0.08) !important;
         color: #f8fafc !important;
     }
-    
-    /* Validity Analysis Container - matches landing page exactly */
+
     .validity-container {
         background: rgba(22, 34, 56, 0.6);
         border: 1px solid rgba(255, 255, 255, 0.1);
@@ -61,7 +63,7 @@ st.markdown(
         backdrop-filter: blur(10px);
         margin-top: 2rem;
     }
-    
+
     .validity-container::before {
         content: '';
         position: absolute;
@@ -71,7 +73,7 @@ st.markdown(
         height: 4px;
         background: linear-gradient(90deg, #ef4444, #f59e0b, #10b981);
     }
-    
+
     .output-header {
         font-family: 'IBM Plex Mono', monospace;
         font-size: 0.85rem;
@@ -82,20 +84,16 @@ st.markdown(
         padding-bottom: 1.5rem;
         border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     }
-    
+
     .output-meta {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
         gap: 2rem;
         margin-bottom: 3rem;
     }
-    
-    .meta-item {
-        display: flex;
-        flex-direction: column;
-        gap: 0.5rem;
-    }
-    
+
+    .meta-item { display: flex; flex-direction: column; gap: 0.5rem; }
+
     .meta-label {
         font-family: 'IBM Plex Mono', monospace;
         font-size: 0.75rem;
@@ -103,13 +101,13 @@ st.markdown(
         letter-spacing: 0.1em;
         color: #64748b;
     }
-    
+
     .meta-value {
         font-size: 1.1rem;
         font-weight: 600;
         color: #f8fafc;
     }
-    
+
     .risk-badge {
         display: inline-flex;
         align-items: center;
@@ -122,7 +120,7 @@ st.markdown(
         font-size: 0.95rem;
         width: fit-content;
     }
-    
+
     .score-value {
         font-size: 2.5rem;
         font-weight: 700;
@@ -132,7 +130,7 @@ st.markdown(
         background-clip: text;
         line-height: 1;
     }
-    
+
     .score-bar {
         width: 200px;
         height: 8px;
@@ -141,17 +139,15 @@ st.markdown(
         overflow: hidden;
         margin-top: 0.5rem;
     }
-    
+
     .score-fill {
         height: 100%;
         background: linear-gradient(90deg, #ef4444, #f59e0b);
         border-radius: 4px;
     }
-    
-    .issues-section {
-        margin-top: 2.5rem;
-    }
-    
+
+    .issues-section { margin-top: 2.5rem; }
+
     .issues-title {
         font-family: 'IBM Plex Mono', monospace;
         font-size: 0.85rem;
@@ -161,7 +157,7 @@ st.markdown(
         margin-bottom: 1.5rem;
         font-weight: 600;
     }
-    
+
     .issue-item {
         background: rgba(10, 22, 40, 0.5);
         border-left: 3px solid var(--issue-color);
@@ -169,14 +165,14 @@ st.markdown(
         padding: 1.5rem;
         margin-bottom: 1rem;
     }
-    
+
     .issue-header {
         display: flex;
         align-items: center;
         gap: 1rem;
         margin-bottom: 0.75rem;
     }
-    
+
     .severity-badge {
         font-family: 'IBM Plex Mono', monospace;
         font-size: 0.7rem;
@@ -186,36 +182,36 @@ st.markdown(
         padding: 0.35rem 0.75rem;
         border-radius: 4px;
     }
-    
+
     .severity-high {
         background: rgba(239, 68, 68, 0.2);
         color: #ef4444;
     }
-    
+
     .severity-medium {
         background: rgba(245, 158, 11, 0.2);
         color: #f59e0b;
     }
 
     .severity-critical {
-        background: rgba(239, 68, 68, 0.2);
+        background: rgba(239, 68, 68, 0.28);
         color: #ef4444;
+        border: 1px solid rgba(239, 68, 68, 0.35);
     }
-    
+
     .issue-title {
         font-size: 1.1rem;
         font-weight: 600;
         color: #f8fafc;
         margin: 0;
     }
-    
+
     .issue-description {
         color: #cbd5e1;
         line-height: 1.6;
         font-size: 0.95rem;
     }
-    
-    /* Input section styling */
+
     .stTextArea textarea {
         background: rgba(30, 47, 72, 0.4) !important;
         border: 1px solid rgba(255, 255, 255, 0.08) !important;
@@ -224,14 +220,14 @@ st.markdown(
         font-family: 'IBM Plex Mono', monospace !important;
         font-size: 0.9rem !important;
     }
-    
+
     .stFileUploader {
         background: rgba(30, 47, 72, 0.4) !important;
         border: 1px solid rgba(255, 255, 255, 0.08) !important;
         border-radius: 12px !important;
         padding: 1.5rem !important;
     }
-    
+
     .stButton > button {
         background: rgba(255, 255, 255, 0.08) !important;
         color: #f8fafc !important;
@@ -244,19 +240,18 @@ st.markdown(
         font-family: 'Inter', sans-serif !important;
         width: 100% !important;
     }
-    
+
     .stButton > button:hover {
         background: rgba(255, 255, 255, 0.12) !important;
         border-color: rgba(255, 255, 255, 0.6) !important;
     }
-    
-    /* Tabs */
+
     .stTabs [data-baseweb="tab-list"] {
         gap: 2rem;
         background: transparent !important;
         border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     }
-    
+
     .stTabs [data-baseweb="tab"] {
         background: transparent !important;
         color: #94a3b8 !important;
@@ -265,7 +260,7 @@ st.markdown(
         font-size: 1rem !important;
         padding: 1rem 0 !important;
     }
-    
+
     .stTabs [aria-selected="true"] {
         color: #f8fafc !important;
         border-bottom: 2px solid #ef4444 !important;
@@ -275,15 +270,15 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
 # -----------------------------
 # Password protection
 # -----------------------------
 def check_password() -> bool:
     def password_entered():
-        if hmac.compare_digest(
-            st.session_state.get("password", ""),
-            st.secrets.get("APP_PASSWORD", ""),
-        ):
+        entered = st.session_state.get("password", "")
+        expected = st.secrets.get("APP_PASSWORD", "")
+        if expected and hmac.compare_digest(entered, expected):
             st.session_state["password_correct"] = True
             if "password" in st.session_state:
                 del st.session_state["password"]
@@ -301,9 +296,9 @@ def check_password() -> bool:
     return False
 
 
-# IMPORTANT: gate everything behind password so secrets/analyzer aren't touched first
 if not check_password():
     st.stop()
+
 
 # -----------------------------
 # Analyzer (cached)
@@ -321,6 +316,7 @@ except Exception as e:
     st.exception(e)
     st.stop()
 
+
 # -----------------------------
 # Session state
 # -----------------------------
@@ -332,8 +328,7 @@ if "last_doc_hash" not in st.session_state:
     st.session_state["last_doc_hash"] = None
 if "doc_text" not in st.session_state:
     st.session_state["doc_text"] = ""
-if "large_mode" not in st.session_state:
-    st.session_state["large_mode"] = False
+
 
 # -----------------------------
 # UI
@@ -358,8 +353,7 @@ with tab1:
                     pdf_reader = PyPDF2.PdfReader(io.BytesIO(uploaded.read()))
                     text = ""
                     for page in pdf_reader.pages:
-                        page_text = page.extract_text() or ""
-                        text += page_text + "\n"
+                        text += (page.extract_text() or "") + "\n"
                     uploaded_text = text
                     st.success(f"✅ PDF loaded ({len(text):,} characters)")
                 except Exception as e:
@@ -378,19 +372,10 @@ with tab1:
             height=380,
             placeholder="Investment memo, legal brief, policy document, etc.",
         )
-
         st.session_state["doc_text"] = doc_input
 
-        # Length indicator
         wc = len((doc_input or "").split())
         st.caption(f"Length: ~{wc:,} words • {len(doc_input):,} characters")
-
-        # Large document mode toggle
-        st.session_state["large_mode"] = st.toggle(
-            "Large Document Mode (slower, higher cost)",
-            value=st.session_state.get("large_mode", False),
-            help="Enables analysis of much larger documents. Uses bigger chunks + higher timeout and may return partial results on timeout.",
-        )
 
         run = st.button(
             "🔍 Analyze Reasoning",
@@ -402,41 +387,36 @@ with tab1:
         st.subheader("Analysis Results")
 
         if run:
-            # Upload/analysis caps (chars). You can override with env vars.
-            STANDARD_MAX_CHARS = int(os.getenv("VALIDITY_MAX_CHARS", "300000"))
-            ABSOLUTE_MAX_CHARS = int(os.getenv("VALIDITY_ABSOLUTE_MAX_CHARS", "1200000"))
+            # All limits are environment-driven
+            STANDARD_MAX_CHARS = env_int("VALIDITY_MAX_CHARS", 300_000)
+            ABSOLUTE_MAX_CHARS = env_int("VALIDITY_ABSOLUTE_MAX_CHARS", 600_000)
+            TIMEOUT_SECONDS = env_int("VALIDITY_TIMEOUT_SECONDS", 180)
 
-            document_text = st.session_state.get("doc_text", "")
+            document_text = (st.session_state.get("doc_text", "") or "").strip()
 
-            # Safety reset (prevents stale lock from causing a rerun/blank-screen loop)
+            # Safety reset: prevents stale lock
             st.session_state["is_running"] = False
 
-            if not document_text or len(document_text.strip()) < 50:
+            if len(document_text) < 50:
                 st.error("Please provide at least 50 characters of text.")
                 st.stop()
 
             doc_len = len(document_text)
-
-            # Hard stop (safety)
             if doc_len > ABSOLUTE_MAX_CHARS:
                 st.error(
-                    f"Document too long ({doc_len:,} chars). "
-                    f"Hard max is {ABSOLUTE_MAX_CHARS:,}."
+                    f"Document too long ({doc_len:,} chars). Hard max is {ABSOLUTE_MAX_CHARS:,}."
                 )
                 st.stop()
 
-            # Standard mode cap
-            if (not st.session_state.get("large_mode", False)) and doc_len > STANDARD_MAX_CHARS:
-                st.error(
-                    f"Document too long for standard mode ({doc_len:,} chars). "
-                    f"Standard max is {STANDARD_MAX_CHARS:,}. "
-                    f"Enable **Large Document Mode** to analyze bigger documents."
+            if doc_len > STANDARD_MAX_CHARS:
+                st.warning(
+                    f"Large document ({doc_len:,} chars). "
+                    f"Standard limit is {STANDARD_MAX_CHARS:,}. "
+                    f"Proceeding anyway (may take longer)."
                 )
-                st.stop()
 
-            # Cache key (so identical docs reuse results)
             MODEL = getattr(analyzer, "model", "unknown")
-            doc_hash = stable_hash(f"{TAXONOMY_VERSION}|{MODEL}|{document_text}")
+            doc_hash = stable_hash(f"{TAXONOMY_VERSION}|{MODEL}|{document_text}|{TIMEOUT_SECONDS}|{STANDARD_MAX_CHARS}|{ABSOLUTE_MAX_CHARS}")
 
             is_cached = (
                 st.session_state["last_doc_hash"] == doc_hash
@@ -448,17 +428,9 @@ with tab1:
             else:
                 st.session_state["is_running"] = True
                 try:
-                    # Bigger timeout in large mode
-                    timeout = 600 if st.session_state.get("large_mode", False) else 180
-
                     with st.spinner("Analyzing reasoning structure..."):
-                        # analyzer.py supports these args in the patched version
-                        result = analyzer.analyze(
-                            document_text,
-                            timeout_seconds=timeout,
-                            large_mode=st.session_state.get("large_mode", False),
-                        )
-
+                        # timeout is now env-driven and passed explicitly
+                        result = analyzer.analyze(document_text, timeout_seconds=TIMEOUT_SECONDS)
                     st.session_state["last_result"] = result
                     st.session_state["last_doc_hash"] = doc_hash
                 finally:
@@ -468,21 +440,26 @@ with tab1:
                 st.error(f"Analysis failed: {result.get('error', 'Unknown error')}")
                 st.stop()
 
-            # Partial analysis warning (large docs)
-            if result.get("partial"):
-                st.warning(result.get("warning") or "Partial analysis returned due to timeout.")
-
             data = result["analysis"]
             score = int(data.get("reasoning_score", 0) or 0)
             risk = (data.get("decision_risk") or "medium").upper()
-            failures = data.get("failures_detected", [])
+            failures = data.get("failures_detected", []) or []
 
-            # Display in exact landing page format
+            partial = bool(result.get("partial", False))
+            chunks_total = result.get("chunks_analyzed", 1)
+            chunks_ok = result.get("chunks_succeeded", 1)
+
+            if partial:
+                st.warning(
+                    f"Partial analysis: synthesized {chunks_ok}/{chunks_total} chunks "
+                    f"before timeout ({TIMEOUT_SECONDS}s)."
+                )
+
             st.markdown(
                 f"""
             <div class="validity-container">
                 <div class="output-header">VALIDITY ANALYSIS — EXECUTIVE SUMMARY (AUTOMATED LOGIC AUDIT)</div>
-                
+
                 <div class="output-meta">
                     <div class="meta-item">
                         <div class="meta-label">Document Type</div>
@@ -520,18 +497,19 @@ with tab1:
                     unsafe_allow_html=True,
                 )
             else:
-                for f in failures[:3]:  # top 3 like landing page
+                for f in failures[:3]:
                     sev = (f.get("severity") or "medium").upper()
                     ftype = (f.get("type") or "").replace("_", " ").title()
                     explanation = f.get("explanation") or "No explanation provided"
 
                     border_color = "#ef4444" if sev in ("HIGH", "CRITICAL") else "#f59e0b"
+                    sev_class = "critical" if sev == "CRITICAL" else sev.lower()
 
                     st.markdown(
                         f"""
                     <div class="issue-item" style="--issue-color: {border_color};">
                         <div class="issue-header">
-                            <span class="severity-badge severity-{sev.lower()}">{sev}</span>
+                            <span class="severity-badge severity-{sev_class}">{sev}</span>
                             <h4 class="issue-title">{ftype}</h4>
                         </div>
                         <p class="issue-description">{explanation}</p>
@@ -544,6 +522,7 @@ with tab1:
 
         else:
             st.info("👈 Paste a document and click 'Analyze Reasoning' to begin")
+
 
 with tab2:
     st.subheader("Example Documents")
