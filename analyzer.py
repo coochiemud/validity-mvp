@@ -1,30 +1,44 @@
 # analyzer.py
-from openai import OpenAI
+from __future__ import annotations
+
 import json
 import os
 import re
 import time
+from typing import Any, Dict, List, Optional
+
 from dotenv import load_dotenv
+from openai import OpenAI
+
+from failure_library import ALLOWED_FAILURE_TYPES, REASONING_FAILURES
 from prompts import build_prompt
-from failure_library import REASONING_FAILURES, ALLOWED_FAILURE_TYPES
 
 load_dotenv()
 
 
 def env_int(key: str, default: int) -> int:
     try:
-        return int(os.getenv(key, str(default)))
+        return int(os.getenv(key, str(default)).strip())
     except Exception:
         return default
 
 
 class ValidityAnalyzer:
+    """
+    ValidityAnalyzer
+    - Calls OpenAI and expects strict JSON (repairs once if needed)
+    - Chunks large documents (char-based, env-driven)
+    - Synthesizes chunk-level analyses into one final analysis
+    - Supports enterprise-grade partial success (timeout yields partial=True with best-effort synthesis)
+    """
+
     def __init__(self):
         api_key = None
         model_name = "gpt-4o"
 
+        # Prefer Streamlit secrets when running in Streamlit
         try:
-            import streamlit as st
+            import streamlit as st  # type: ignore
             api_key = st.secrets.get("OPENAI_API_KEY")
             model_name = st.secrets.get("MODEL_NAME", "gpt-4o")
         except Exception:
@@ -37,12 +51,16 @@ class ValidityAnalyzer:
         self.client = OpenAI(api_key=api_key)
         self.model = model_name
 
-        self.MAX_FAILURES_RETURNED = 10
-        self.MAX_SYNTHESIS_ITEMS = 5
+        # Output caps
+        self.MAX_FAILURES_RETURNED = env_int("VALIDITY_MAX_FAILURES_RETURNED", 10)
+        self.MAX_SYNTHESIS_ITEMS = env_int("VALIDITY_MAX_SYNTHESIS_ITEMS", 5)
 
-        # Env-driven chunking (characters, not words)
-        # Keep this in the 12k–20k range for stability.
+        # Chunking (characters)
+        # Recommended 12k–20k for stability.
         self.CHUNK_SIZE_CHARS = env_int("VALIDITY_CHUNK_SIZE", 15000)
+
+        # Analyzer timeout default (can be overridden per-call)
+        self.DEFAULT_TIMEOUT_SECONDS = env_int("VALIDITY_TIMEOUT_SECONDS", 240)
 
     def _normalize_text(self, text: str) -> str:
         text = text.replace("\x00", "")
@@ -76,13 +94,13 @@ Return the corrected JSON:"""
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[{"role": "user", "content": repair_prompt}],
-            max_tokens=4000,
-            temperature=0
+            max_tokens=2000,
+            temperature=0,
         )
-        repaired = response.choices[0].message.content
+        repaired = response.choices[0].message.content or ""
         return self._clean_json_response(repaired)
 
-    def _enforce_allowed_failure_types(self, failures) -> list:
+    def _enforce_allowed_failure_types(self, failures: Any) -> List[Dict[str, Any]]:
         if not isinstance(failures, list):
             return []
         return [
@@ -90,8 +108,8 @@ Return the corrected JSON:"""
             if isinstance(f, dict) and f.get("type") in ALLOWED_FAILURE_TYPES
         ]
 
-    def _normalize_failures(self, failures: list) -> list:
-        normalized = []
+    def _normalize_failures(self, failures: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        normalized: List[Dict[str, Any]] = []
         for f in failures:
             ftype = f.get("type")
             if ftype in REASONING_FAILURES:
@@ -100,19 +118,19 @@ Return the corrected JSON:"""
             normalized.append(f)
         return normalized
 
-    def _severity_rank(self, sev: str) -> int:
-        return {"critical": 3, "high": 2, "medium": 1}.get((sev or "").lower(), 0)
+    def _severity_rank(self, sev: Optional[str]) -> int:
+        s = (sev or "").lower()
+        return {"critical": 3, "high": 2, "medium": 1}.get(s, 0)
 
-    def _sorted_failures(self, failures: list) -> list:
+    def _sorted_failures(self, failures: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return sorted(
             failures,
-            key=lambda f: (-self._severity_rank(f.get("severity", "medium")), f.get("type", "")),
+            key=lambda f: (-self._severity_rank(f.get("severity")), f.get("type", "")),
         )
 
-    def _compute_score(self, failures: list) -> int:
+    def _compute_score(self, failures: List[Dict[str, Any]]) -> int:
         if not failures:
             return 100
-
         score = 100
         for f in failures:
             sev = (f.get("severity") or "medium").lower()
@@ -124,25 +142,25 @@ Return the corrected JSON:"""
                 score -= 10
         return max(0, min(100, score))
 
-    def _compute_decision_risk(self, failures: list) -> str:
+    def _compute_decision_risk(self, failures: List[Dict[str, Any]]) -> str:
         if any((f.get("severity") or "").lower() == "critical" for f in failures):
             return "critical"
 
         high_count = sum(1 for f in failures if (f.get("severity") or "").lower() == "high")
         if high_count >= 3:
             return "high"
-        elif high_count >= 1:
+        if high_count >= 1:
             return "medium"
 
         medium_count = sum(1 for f in failures if (f.get("severity") or "").lower() == "medium")
         if medium_count >= 5:
             return "medium"
-        elif medium_count >= 2:
+        if medium_count >= 2:
             return "low"
 
         return "low"
 
-    def _compute_review_priority(self, failures: list) -> dict:
+    def _compute_review_priority(self, failures: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
         priorities = {"must_fix": [], "should_fix": [], "nice_to_have": []}
         for f in failures:
             sev = (f.get("severity") or "medium").lower()
@@ -154,26 +172,23 @@ Return the corrected JSON:"""
                 priorities["nice_to_have"].append(f)
         return priorities
 
-    # -----------------------------
-    # Chunking: char-based, env-driven
-    # -----------------------------
-    def _chunk_document(self, document: str) -> list:
+    def _chunk_document(self, document: str) -> List[str]:
         size = max(3000, int(self.CHUNK_SIZE_CHARS))
         if len(document) <= size:
             return [document]
         return [document[i:i + size] for i in range(0, len(document), size)]
 
-    def _analyze_chunk(self, chunk: str) -> dict:
+    def _analyze_chunk(self, chunk: str) -> Dict[str, Any]:
         prompt = build_prompt(chunk)
 
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=4000,
-            temperature=0
+            max_tokens=2500,
+            temperature=0,
         )
 
-        response_text = response.choices[0].message.content
+        response_text = response.choices[0].message.content or ""
         cleaned = self._clean_json_response(response_text)
 
         try:
@@ -192,13 +207,11 @@ Return the corrected JSON:"""
                     "assumption_sensitivity": [],
                     "strengths_detected": [],
                     "overall_assessment": {"confidence": "low", "summary": "Parse error occurred"},
-                    "_meta": {"parse_failed": True}
+                    "_meta": {"parse_failed": True},
                 }
 
-    def _synthesize(self, chunk_results: list) -> dict:
-        clean_chunks = []
-        for chunk in chunk_results:
-            clean_chunks.append({k: v for k, v in chunk.items() if k != "_meta"})
+    def _synthesize(self, chunk_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        clean_chunks = [{k: v for k, v in c.items() if k != "_meta"} for c in chunk_results]
 
         if len(clean_chunks) == 1:
             result = clean_chunks[0]
@@ -220,11 +233,11 @@ Return the synthesized JSON:"""
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=4000,
-                temperature=0
+                max_tokens=2500,
+                temperature=0,
             )
 
-            cleaned = self._clean_json_response(response.choices[0].message.content)
+            cleaned = self._clean_json_response(response.choices[0].message.content or "")
 
             try:
                 result = json.loads(cleaned)
@@ -235,38 +248,34 @@ Return the synthesized JSON:"""
                 except Exception:
                     result = clean_chunks[0]
 
-        failures = result.get("failures_detected", [])
-        failures = self._enforce_allowed_failure_types(failures)
-        failures = self._normalize_failures(failures)
-        failures = self._sorted_failures(failures)
+        failures = self._sorted_failures(
+            self._normalize_failures(self._enforce_allowed_failure_types(result.get("failures_detected", [])))
+        )
 
         total_failures = len(failures)
-        failures = failures[:self.MAX_FAILURES_RETURNED]
+        failures = failures[: self.MAX_FAILURES_RETURNED]
 
         result["failures_detected"] = failures
         result["total_failures_detected"] = total_failures
-
         result["reasoning_score"] = self._compute_score(failures)
         result["decision_risk"] = self._compute_decision_risk(failures)
         result["review_priorities"] = self._compute_review_priority(failures)
         result["top_risk_flags"] = [f["type"] for f in failures[:3]]
 
-        if "claims" in result:
+        # Cap other lists
+        if isinstance(result.get("claims"), list):
             result["claims"] = result["claims"][: self.MAX_SYNTHESIS_ITEMS * 2]
-        if "counterfactual_tests" in result:
+        if isinstance(result.get("counterfactual_tests"), list):
             result["counterfactual_tests"] = result["counterfactual_tests"][: self.MAX_SYNTHESIS_ITEMS]
-        if "assumption_sensitivity" in result:
+        if isinstance(result.get("assumption_sensitivity"), list):
             result["assumption_sensitivity"] = result["assumption_sensitivity"][: self.MAX_SYNTHESIS_ITEMS]
-        if "strengths_detected" in result:
+        if isinstance(result.get("strengths_detected"), list):
             result["strengths_detected"] = result["strengths_detected"][: self.MAX_SYNTHESIS_ITEMS]
 
         return result
 
-    def _validate_schema(self, analysis: dict) -> bool:
-        required = [
-            "thesis", "claims", "failures_detected",
-            "overall_assessment", "decision_risk", "reasoning_score"
-        ]
+    def _validate_schema(self, analysis: Dict[str, Any]) -> bool:
+        required = ["thesis", "claims", "failures_detected", "overall_assessment", "decision_risk", "reasoning_score"]
         if not all(k in analysis for k in required):
             return False
         if analysis["decision_risk"] not in ["critical", "high", "medium", "low"]:
@@ -275,10 +284,8 @@ Return the synthesized JSON:"""
             return False
         return True
 
-    # -----------------------------
-    # Public API: partial-success behavior
-    # -----------------------------
-    def analyze(self, document: str, timeout_seconds: int = 180) -> dict:
+    def analyze(self, document: str, timeout_seconds: Optional[int] = None) -> Dict[str, Any]:
+        timeout_seconds = int(timeout_seconds or self.DEFAULT_TIMEOUT_SECONDS)
         start_time = time.time()
 
         try:
@@ -288,7 +295,7 @@ Return the synthesized JSON:"""
 
             chunks = self._chunk_document(document)
 
-            chunk_results = []
+            chunk_results: List[Dict[str, Any]] = []
             chunk_failures = 0
             timed_out = False
 

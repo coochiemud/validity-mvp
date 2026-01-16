@@ -7,9 +7,8 @@ import hmac
 import streamlit as st
 import PyPDF2
 
-
 ANALYZER_VERSION = "openai-2026-01-11-v3"
-TAXONOMY_VERSION = "v3"  # bump when prompts/taxonomy changes
+TAXONOMY_VERSION = "v3"
 
 
 def stable_hash(text: str) -> str:
@@ -18,253 +17,139 @@ def stable_hash(text: str) -> str:
 
 def env_int(key: str, default: int) -> int:
     try:
-        return int(os.getenv(key, str(default)))
+        # Streamlit secrets can contain strings too; os.getenv returns strings.
+        return int(os.getenv(key, str(default)).strip())
     except Exception:
         return default
 
 
 # -----------------------------
-# Custom CSS for Validity branding - EXACT match to landing page
+# Custom CSS (your current branding)
 # -----------------------------
 st.markdown(
     """
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&family=Sora:wght@400;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&family=Sora:wght@400;600;700&display=swap');
 
-    .stApp {
-        background: #0a1628;
-        color: #f8fafc;
-        font-family: 'Inter', sans-serif;
-    }
+.stApp { background: #0a1628; color: #f8fafc; font-family: 'Inter', sans-serif; }
+#MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
 
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
+h1, h2, h3 { font-family: 'Sora', sans-serif !important; color: #f8fafc !important; letter-spacing: -0.02em !important; }
 
-    h1, h2, h3 {
-        font-family: 'Sora', sans-serif !important;
-        color: #f8fafc !important;
-        letter-spacing: -0.02em !important;
-    }
+.stTextInput input { background: rgba(30, 47, 72, 0.4) !important; border: 1px solid rgba(255,255,255,0.08) !important; color: #f8fafc !important; }
 
-    .stTextInput input {
-        background: rgba(30, 47, 72, 0.4) !important;
-        border: 1px solid rgba(255, 255, 255, 0.08) !important;
-        color: #f8fafc !important;
-    }
+.validity-container {
+  background: rgba(22, 34, 56, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  padding: 3rem;
+  position: relative;
+  overflow: hidden;
+  backdrop-filter: blur(10px);
+  margin-top: 2rem;
+}
+.validity-container::before {
+  content:'';
+  position:absolute; top:0; left:0;
+  width:100%; height:4px;
+  background: linear-gradient(90deg, #ef4444, #f59e0b, #10b981);
+}
+.output-header {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: #94a3b8;
+  margin-bottom: 2.5rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.output-meta { display:grid; grid-template-columns: repeat(3, 1fr); gap:2rem; margin-bottom:3rem; }
+.meta-item { display:flex; flex-direction:column; gap:0.5rem; }
+.meta-label { font-family:'IBM Plex Mono', monospace; font-size:0.75rem; text-transform:uppercase; letter-spacing:0.1em; color:#64748b; }
+.meta-value { font-size:1.1rem; font-weight:600; color:#f8fafc; }
 
-    .validity-container {
-        background: rgba(22, 34, 56, 0.6);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 16px;
-        padding: 3rem;
-        position: relative;
-        overflow: hidden;
-        backdrop-filter: blur(10px);
-        margin-top: 2rem;
-    }
+.risk-badge {
+  display:inline-flex; align-items:center; gap:0.5rem;
+  background: rgba(245,158,11,0.15);
+  color:#f59e0b;
+  padding:0.5rem 1rem;
+  border-radius:6px;
+  border:1px solid rgba(245,158,11,0.3);
+  font-size:0.95rem;
+  width: fit-content;
+}
+.score-value {
+  font-size:2.5rem; font-weight:700;
+  background: linear-gradient(135deg, #ef4444, #f59e0b);
+  -webkit-background-clip:text;
+  -webkit-text-fill-color:transparent;
+  background-clip:text;
+  line-height:1;
+}
+.score-bar { width:200px; height:8px; background:rgba(255,255,255,0.1); border-radius:4px; overflow:hidden; margin-top:0.5rem; }
+.score-fill { height:100%; background: linear-gradient(90deg, #ef4444, #f59e0b); border-radius:4px; }
 
-    .validity-container::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 4px;
-        background: linear-gradient(90deg, #ef4444, #f59e0b, #10b981);
-    }
+.issues-section { margin-top:2.5rem; }
+.issues-title {
+  font-family:'IBM Plex Mono', monospace;
+  font-size:0.85rem;
+  text-transform:uppercase;
+  letter-spacing:0.15em;
+  color:#f8fafc;
+  margin-bottom:1.5rem;
+  font-weight:600;
+}
+.issue-item { background: rgba(10,22,40,0.5); border-left:3px solid var(--issue-color); border-radius:6px; padding:1.5rem; margin-bottom:1rem; }
+.issue-header { display:flex; align-items:center; gap:1rem; margin-bottom:0.75rem; }
 
-    .output-header {
-        font-family: 'IBM Plex Mono', monospace;
-        font-size: 0.85rem;
-        text-transform: uppercase;
-        letter-spacing: 0.15em;
-        color: #94a3b8;
-        margin-bottom: 2.5rem;
-        padding-bottom: 1.5rem;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    }
+.severity-badge {
+  font-family:'IBM Plex Mono', monospace;
+  font-size:0.7rem;
+  font-weight:600;
+  text-transform:uppercase;
+  letter-spacing:0.1em;
+  padding:0.35rem 0.75rem;
+  border-radius:4px;
+}
+.severity-critical { background: rgba(239,68,68,0.28); color:#ef4444; border:1px solid rgba(239,68,68,0.35); }
+.severity-high { background: rgba(239,68,68,0.2); color:#ef4444; }
+.severity-medium { background: rgba(245,158,11,0.2); color:#f59e0b; }
 
-    .output-meta {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 2rem;
-        margin-bottom: 3rem;
-    }
+.issue-title { font-size:1.1rem; font-weight:600; color:#f8fafc; margin:0; }
+.issue-description { color:#cbd5e1; line-height:1.6; font-size:0.95rem; }
 
-    .meta-item { display: flex; flex-direction: column; gap: 0.5rem; }
+.stTextArea textarea {
+  background: rgba(30,47,72,0.4) !important;
+  border: 1px solid rgba(255,255,255,0.08) !important;
+  border-radius:8px !important;
+  color:#f8fafc !important;
+  font-family:'IBM Plex Mono', monospace !important;
+  font-size:0.9rem !important;
+}
+.stFileUploader {
+  background: rgba(30,47,72,0.4) !important;
+  border:1px solid rgba(255,255,255,0.08) !important;
+  border-radius:12px !important;
+  padding:1.5rem !important;
+}
+.stButton > button {
+  background: rgba(255,255,255,0.08) !important;
+  color:#f8fafc !important;
+  border: 1px solid rgba(255,255,255,0.4) !important;
+  border-radius:4px !important;
+  padding:1rem 2rem !important;
+  font-weight:600 !important;
+  text-transform:uppercase !important;
+  letter-spacing:0.05em !important;
+  font-family:'Inter', sans-serif !important;
+  width:100% !important;
+}
+.stButton > button:hover { background: rgba(255,255,255,0.12) !important; border-color: rgba(255,255,255,0.6) !important; }
 
-    .meta-label {
-        font-family: 'IBM Plex Mono', monospace;
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        color: #64748b;
-    }
-
-    .meta-value {
-        font-size: 1.1rem;
-        font-weight: 600;
-        color: #f8fafc;
-    }
-
-    .risk-badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.5rem;
-        background: rgba(245, 158, 11, 0.15);
-        color: #f59e0b;
-        padding: 0.5rem 1rem;
-        border-radius: 6px;
-        border: 1px solid rgba(245, 158, 11, 0.3);
-        font-size: 0.95rem;
-        width: fit-content;
-    }
-
-    .score-value {
-        font-size: 2.5rem;
-        font-weight: 700;
-        background: linear-gradient(135deg, #ef4444, #f59e0b);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-        line-height: 1;
-    }
-
-    .score-bar {
-        width: 200px;
-        height: 8px;
-        background: rgba(255, 255, 255, 0.1);
-        border-radius: 4px;
-        overflow: hidden;
-        margin-top: 0.5rem;
-    }
-
-    .score-fill {
-        height: 100%;
-        background: linear-gradient(90deg, #ef4444, #f59e0b);
-        border-radius: 4px;
-    }
-
-    .issues-section { margin-top: 2.5rem; }
-
-    .issues-title {
-        font-family: 'IBM Plex Mono', monospace;
-        font-size: 0.85rem;
-        text-transform: uppercase;
-        letter-spacing: 0.15em;
-        color: #f8fafc;
-        margin-bottom: 1.5rem;
-        font-weight: 600;
-    }
-
-    .issue-item {
-        background: rgba(10, 22, 40, 0.5);
-        border-left: 3px solid var(--issue-color);
-        border-radius: 6px;
-        padding: 1.5rem;
-        margin-bottom: 1rem;
-    }
-
-    .issue-header {
-        display: flex;
-        align-items: center;
-        gap: 1rem;
-        margin-bottom: 0.75rem;
-    }
-
-    .severity-badge {
-        font-family: 'IBM Plex Mono', monospace;
-        font-size: 0.7rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        padding: 0.35rem 0.75rem;
-        border-radius: 4px;
-    }
-
-    .severity-high {
-        background: rgba(239, 68, 68, 0.2);
-        color: #ef4444;
-    }
-
-    .severity-medium {
-        background: rgba(245, 158, 11, 0.2);
-        color: #f59e0b;
-    }
-
-    .severity-critical {
-        background: rgba(239, 68, 68, 0.28);
-        color: #ef4444;
-        border: 1px solid rgba(239, 68, 68, 0.35);
-    }
-
-    .issue-title {
-        font-size: 1.1rem;
-        font-weight: 600;
-        color: #f8fafc;
-        margin: 0;
-    }
-
-    .issue-description {
-        color: #cbd5e1;
-        line-height: 1.6;
-        font-size: 0.95rem;
-    }
-
-    .stTextArea textarea {
-        background: rgba(30, 47, 72, 0.4) !important;
-        border: 1px solid rgba(255, 255, 255, 0.08) !important;
-        border-radius: 8px !important;
-        color: #f8fafc !important;
-        font-family: 'IBM Plex Mono', monospace !important;
-        font-size: 0.9rem !important;
-    }
-
-    .stFileUploader {
-        background: rgba(30, 47, 72, 0.4) !important;
-        border: 1px solid rgba(255, 255, 255, 0.08) !important;
-        border-radius: 12px !important;
-        padding: 1.5rem !important;
-    }
-
-    .stButton > button {
-        background: rgba(255, 255, 255, 0.08) !important;
-        color: #f8fafc !important;
-        border: 1px solid rgba(255, 255, 255, 0.4) !important;
-        border-radius: 4px !important;
-        padding: 1rem 2rem !important;
-        font-weight: 600 !important;
-        text-transform: uppercase !important;
-        letter-spacing: 0.05em !important;
-        font-family: 'Inter', sans-serif !important;
-        width: 100% !important;
-    }
-
-    .stButton > button:hover {
-        background: rgba(255, 255, 255, 0.12) !important;
-        border-color: rgba(255, 255, 255, 0.6) !important;
-    }
-
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 2rem;
-        background: transparent !important;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    }
-
-    .stTabs [data-baseweb="tab"] {
-        background: transparent !important;
-        color: #94a3b8 !important;
-        font-family: 'Inter', sans-serif !important;
-        font-weight: 600 !important;
-        font-size: 1rem !important;
-        padding: 1rem 0 !important;
-    }
-
-    .stTabs [aria-selected="true"] {
-        color: #f8fafc !important;
-        border-bottom: 2px solid #ef4444 !important;
-    }
+.stTabs [data-baseweb="tab-list"] { gap:2rem; background:transparent !important; border-bottom: 1px solid rgba(255,255,255,0.08); }
+.stTabs [data-baseweb="tab"] { background:transparent !important; color:#94a3b8 !important; font-family:'Inter', sans-serif !important; font-weight:600 !important; font-size:1rem !important; padding:1rem 0 !important; }
+.stTabs [aria-selected="true"] { color:#f8fafc !important; border-bottom:2px solid #ef4444 !important; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -272,7 +157,7 @@ st.markdown(
 
 
 # -----------------------------
-# Password protection
+# Password gate (entire app)
 # -----------------------------
 def check_password() -> bool:
     def password_entered():
@@ -280,8 +165,7 @@ def check_password() -> bool:
         expected = st.secrets.get("APP_PASSWORD", "")
         if expected and hmac.compare_digest(entered, expected):
             st.session_state["password_correct"] = True
-            if "password" in st.session_state:
-                del st.session_state["password"]
+            st.session_state.pop("password", None)
         else:
             st.session_state["password_correct"] = False
 
@@ -290,7 +174,7 @@ def check_password() -> bool:
 
     st.text_input("Password", type="password", on_change=password_entered, key="password")
 
-    if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+    if st.session_state.get("password_correct") is False:
         st.error("😕 Password incorrect")
 
     return False
@@ -320,14 +204,10 @@ except Exception as e:
 # -----------------------------
 # Session state
 # -----------------------------
-if "is_running" not in st.session_state:
-    st.session_state["is_running"] = False
-if "last_result" not in st.session_state:
-    st.session_state["last_result"] = None
-if "last_doc_hash" not in st.session_state:
-    st.session_state["last_doc_hash"] = None
-if "doc_text" not in st.session_state:
-    st.session_state["doc_text"] = ""
+st.session_state.setdefault("is_running", False)
+st.session_state.setdefault("last_result", None)
+st.session_state.setdefault("last_doc_hash", None)
+st.session_state.setdefault("doc_text", "")
 
 
 # -----------------------------
@@ -377,24 +257,20 @@ with tab1:
         wc = len((doc_input or "").split())
         st.caption(f"Length: ~{wc:,} words • {len(doc_input):,} characters")
 
-        run = st.button(
-            "🔍 Analyze Reasoning",
-            type="primary",
-            disabled=st.session_state["is_running"],
-        )
+        run = st.button("🔍 Analyze Reasoning", type="primary", disabled=st.session_state["is_running"])
 
     with col2:
         st.subheader("Analysis Results")
 
         if run:
-            # All limits are environment-driven
+            # Env-driven limits (secrets become env vars on Streamlit Cloud)
             STANDARD_MAX_CHARS = env_int("VALIDITY_MAX_CHARS", 300_000)
             ABSOLUTE_MAX_CHARS = env_int("VALIDITY_ABSOLUTE_MAX_CHARS", 600_000)
-            TIMEOUT_SECONDS = env_int("VALIDITY_TIMEOUT_SECONDS", 180)
+            TIMEOUT_SECONDS = env_int("VALIDITY_TIMEOUT_SECONDS", 240)
 
             document_text = (st.session_state.get("doc_text", "") or "").strip()
 
-            # Safety reset: prevents stale lock
+            # Safety reset
             st.session_state["is_running"] = False
 
             if len(document_text) < 50:
@@ -402,34 +278,30 @@ with tab1:
                 st.stop()
 
             doc_len = len(document_text)
+
             if doc_len > ABSOLUTE_MAX_CHARS:
-                st.error(
-                    f"Document too long ({doc_len:,} chars). Hard max is {ABSOLUTE_MAX_CHARS:,}."
-                )
+                st.error(f"Document too long ({doc_len:,} chars). Hard max is {ABSOLUTE_MAX_CHARS:,}.")
                 st.stop()
 
             if doc_len > STANDARD_MAX_CHARS:
                 st.warning(
-                    f"Large document ({doc_len:,} chars). "
-                    f"Standard limit is {STANDARD_MAX_CHARS:,}. "
-                    f"Proceeding anyway (may take longer)."
+                    f"Large document detected ({doc_len:,} chars). "
+                    f"Standard limit is {STANDARD_MAX_CHARS:,}. Proceeding anyway (may take longer)."
                 )
 
             MODEL = getattr(analyzer, "model", "unknown")
-            doc_hash = stable_hash(f"{TAXONOMY_VERSION}|{MODEL}|{document_text}|{TIMEOUT_SECONDS}|{STANDARD_MAX_CHARS}|{ABSOLUTE_MAX_CHARS}")
 
-            is_cached = (
-                st.session_state["last_doc_hash"] == doc_hash
-                and st.session_state["last_result"] is not None
+            # Cache must include the analysis settings (timeout impacts partial behavior)
+            doc_hash = stable_hash(
+                f"{TAXONOMY_VERSION}|{MODEL}|{TIMEOUT_SECONDS}|{STANDARD_MAX_CHARS}|{ABSOLUTE_MAX_CHARS}|{document_text}"
             )
 
-            if is_cached:
+            if st.session_state["last_doc_hash"] == doc_hash and st.session_state["last_result"] is not None:
                 result = st.session_state["last_result"]
             else:
                 st.session_state["is_running"] = True
                 try:
                     with st.spinner("Analyzing reasoning structure..."):
-                        # timeout is now env-driven and passed explicitly
                         result = analyzer.analyze(document_text, timeout_seconds=TIMEOUT_SECONDS)
                     st.session_state["last_result"] = result
                     st.session_state["last_doc_hash"] = doc_hash
@@ -440,54 +312,49 @@ with tab1:
                 st.error(f"Analysis failed: {result.get('error', 'Unknown error')}")
                 st.stop()
 
+            partial = bool(result.get("partial", False))
+            chunks_total = int(result.get("chunks_analyzed", 1) or 1)
+            chunks_ok = int(result.get("chunks_succeeded", 1) or 1)
+
+            if partial:
+                st.warning(
+                    f"Partial analysis delivered: synthesized {chunks_ok}/{chunks_total} chunks "
+                    f"before timeout ({TIMEOUT_SECONDS}s)."
+                )
+
             data = result["analysis"]
             score = int(data.get("reasoning_score", 0) or 0)
             risk = (data.get("decision_risk") or "medium").upper()
             failures = data.get("failures_detected", []) or []
 
-            partial = bool(result.get("partial", False))
-            chunks_total = result.get("chunks_analyzed", 1)
-            chunks_ok = result.get("chunks_succeeded", 1)
-
-            if partial:
-                st.warning(
-                    f"Partial analysis: synthesized {chunks_ok}/{chunks_total} chunks "
-                    f"before timeout ({TIMEOUT_SECONDS}s)."
-                )
-
             st.markdown(
                 f"""
-            <div class="validity-container">
-                <div class="output-header">VALIDITY ANALYSIS — EXECUTIVE SUMMARY (AUTOMATED LOGIC AUDIT)</div>
+<div class="validity-container">
+  <div class="output-header">VALIDITY ANALYSIS — EXECUTIVE SUMMARY (AUTOMATED LOGIC AUDIT)</div>
 
-                <div class="output-meta">
-                    <div class="meta-item">
-                        <div class="meta-label">Document Type</div>
-                        <div class="meta-value">Investment Memorandum</div>
-                    </div>
-                    <div class="meta-item">
-                        <div class="meta-label">Risk Classification</div>
-                        <div class="meta-value">
-                            <span class="risk-badge">
-                                <span>⚠️</span>
-                                <span>{risk.title()}</span>
-                            </span>
-                        </div>
-                    </div>
-                    <div class="meta-item">
-                        <div class="meta-label">Reasoning Quality</div>
-                        <div class="meta-value">
-                            <div class="score-value">{score}/100</div>
-                            <div class="score-bar">
-                                <div class="score-fill" style="width: {max(0, min(100, score))}%;"></div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+  <div class="output-meta">
+    <div class="meta-item">
+      <div class="meta-label">Document Type</div>
+      <div class="meta-value">Investment Memorandum</div>
+    </div>
+    <div class="meta-item">
+      <div class="meta-label">Risk Classification</div>
+      <div class="meta-value">
+        <span class="risk-badge"><span>⚠️</span><span>{risk.title()}</span></span>
+      </div>
+    </div>
+    <div class="meta-item">
+      <div class="meta-label">Reasoning Quality</div>
+      <div class="meta-value">
+        <div class="score-value">{score}/100</div>
+        <div class="score-bar"><div class="score-fill" style="width: {max(0, min(100, score))}%;"></div></div>
+      </div>
+    </div>
+  </div>
 
-                <div class="issues-section">
-                    <div class="issues-title">Critical Issues Identified</div>
-            """,
+  <div class="issues-section">
+    <div class="issues-title">Critical Issues Identified</div>
+""",
                 unsafe_allow_html=True,
             )
 
@@ -498,31 +365,30 @@ with tab1:
                 )
             else:
                 for f in failures[:3]:
-                    sev = (f.get("severity") or "medium").upper()
+                    sev = (f.get("severity") or "medium").lower()
+                    sev_label = sev.upper()
                     ftype = (f.get("type") or "").replace("_", " ").title()
                     explanation = f.get("explanation") or "No explanation provided"
 
-                    border_color = "#ef4444" if sev in ("HIGH", "CRITICAL") else "#f59e0b"
-                    sev_class = "critical" if sev == "CRITICAL" else sev.lower()
+                    border_color = "#ef4444" if sev in ("high", "critical") else "#f59e0b"
+                    sev_class = "critical" if sev == "critical" else ("high" if sev == "high" else "medium")
 
                     st.markdown(
                         f"""
-                    <div class="issue-item" style="--issue-color: {border_color};">
-                        <div class="issue-header">
-                            <span class="severity-badge severity-{sev_class}">{sev}</span>
-                            <h4 class="issue-title">{ftype}</h4>
-                        </div>
-                        <p class="issue-description">{explanation}</p>
-                    </div>
-                    """,
+<div class="issue-item" style="--issue-color: {border_color};">
+  <div class="issue-header">
+    <span class="severity-badge severity-{sev_class}">{sev_label}</span>
+    <h4 class="issue-title">{ftype}</h4>
+  </div>
+  <p class="issue-description">{explanation}</p>
+</div>
+""",
                         unsafe_allow_html=True,
                     )
 
             st.markdown("</div></div>", unsafe_allow_html=True)
-
         else:
             st.info("👈 Paste a document and click 'Analyze Reasoning' to begin")
-
 
 with tab2:
     st.subheader("Example Documents")
@@ -565,13 +431,9 @@ Proposed Solution: Variable speed limits:
 - 35mph outside school hours
 
 Expected Outcomes:
-- Reduced speeding violations (addresses actual high-speed behavior)
+- Reduced speeding violations
 - Maintained child safety during relevant hours
-- Improved compliance through reasonable restrictions
-
-Counterfactual Considered: Maintaining status quo would continue high violation rates
-without additional safety benefit. Alternative of increased enforcement was rejected
-due to resource constraints and limited impact on nighttime speeding.""",
+- Improved compliance through reasonable restrictions""",
         "Mixed Market Analysis": """Q4 2024 Market Analysis: Renewable Energy Sector
 
 Thesis: Renewable energy stocks will outperform the S&P 500 in 2025.
@@ -582,14 +444,11 @@ Supporting Factors:
 3. Market demand: Corporate renewable commitments have doubled year-over-year
 
 However, the sector faces headwinds:
-- Interest rates remain elevated, increasing project financing costs
-- Supply chain constraints persist for key components
+- Interest rates remain elevated
+- Supply chain constraints persist
 - Some analysts predict oversupply in 2025
 
-Despite these challenges, the long-term outlook remains positive because governments
-globally are committed to carbon reduction. This means renewable energy is the future.
-
-Recommendation: Overweight renewable energy stocks by 15% relative to market cap weight.""",
+Recommendation: Overweight renewable energy stocks by 15%.""",
     }
 
     st.code(examples[example], language=None)
