@@ -197,13 +197,8 @@ st.markdown(
         color: #f59e0b;
     }
 
-    .severity-low {
-        background: rgba(148, 163, 184, 0.16);
-        color: #94a3b8;
-    }
-
     .severity-critical {
-        background: rgba(239, 68, 68, 0.28);
+        background: rgba(239, 68, 68, 0.2);
         color: #ef4444;
     }
     
@@ -280,7 +275,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
 # -----------------------------
 # Password protection
 # -----------------------------
@@ -311,7 +305,6 @@ def check_password() -> bool:
 if not check_password():
     st.stop()
 
-
 # -----------------------------
 # Analyzer (cached)
 # -----------------------------
@@ -328,7 +321,6 @@ except Exception as e:
     st.exception(e)
     st.stop()
 
-
 # -----------------------------
 # Session state
 # -----------------------------
@@ -342,46 +334,6 @@ if "doc_text" not in st.session_state:
     st.session_state["doc_text"] = ""
 if "large_mode" not in st.session_state:
     st.session_state["large_mode"] = False
-
-
-# -----------------------------
-# Helpers (chunking + merge)
-# -----------------------------
-def chunk_text(text: str, size: int):
-    return [text[i : i + size] for i in range(0, len(text), size)]
-
-
-def risk_rank(r: str) -> int:
-    r = (r or "").lower()
-    return {"low": 1, "medium": 2, "high": 3, "critical": 4}.get(r, 2)
-
-
-def sev_rank(s: str) -> int:
-    s = (s or "").lower()
-    return {"critical": 4, "high": 3, "medium": 2, "low": 1}.get(s, 2)
-
-
-def merge_analyses(analyses: list) -> dict:
-    """Simple, safe merge: avg score, worst risk, concat failures sorted by severity."""
-    if not analyses:
-        return {}
-
-    avg_score = int(sum(a.get("reasoning_score", 0) for a in analyses) / len(analyses))
-    worst = max(analyses, key=lambda a: risk_rank(a.get("decision_risk")))
-    worst_risk = (worst.get("decision_risk") or "medium").lower()
-
-    all_failures = []
-    for a in analyses:
-        all_failures.extend(a.get("failures_detected", []) or [])
-    all_failures.sort(key=lambda f: sev_rank(f.get("severity")), reverse=True)
-
-    merged = dict(analyses[0])
-    merged["reasoning_score"] = avg_score
-    merged["decision_risk"] = worst_risk
-    merged["failures_detected"] = all_failures
-    merged["total_failures_detected"] = len(all_failures)
-    return merged
-
 
 # -----------------------------
 # UI
@@ -406,7 +358,8 @@ with tab1:
                     pdf_reader = PyPDF2.PdfReader(io.BytesIO(uploaded.read()))
                     text = ""
                     for page in pdf_reader.pages:
-                        text += (page.extract_text() or "") + "\n"
+                        page_text = page.extract_text() or ""
+                        text += page_text + "\n"
                     uploaded_text = text
                     st.success(f"✅ PDF loaded ({len(text):,} characters)")
                 except Exception as e:
@@ -428,13 +381,15 @@ with tab1:
 
         st.session_state["doc_text"] = doc_input
 
+        # Length indicator
         wc = len((doc_input or "").split())
         st.caption(f"Length: ~{wc:,} words • {len(doc_input):,} characters")
 
+        # Large document mode toggle
         st.session_state["large_mode"] = st.toggle(
             "Large Document Mode (slower, higher cost)",
             value=st.session_state.get("large_mode", False),
-            help="Enables analysis of much larger documents. Large docs will be split into chunks and merged.",
+            help="Enables analysis of much larger documents. Uses bigger chunks + higher timeout and may return partial results on timeout.",
         )
 
         run = st.button(
@@ -447,16 +402,13 @@ with tab1:
         st.subheader("Analysis Results")
 
         if run:
-            # Configurable caps:
-            # - Standard: 300k chars by default
-            # - Absolute: 1.2M chars hard stop safety
+            # Upload/analysis caps (chars). You can override with env vars.
             STANDARD_MAX_CHARS = int(os.getenv("VALIDITY_MAX_CHARS", "300000"))
             ABSOLUTE_MAX_CHARS = int(os.getenv("VALIDITY_ABSOLUTE_MAX_CHARS", "1200000"))
-            CHUNK_SIZE = int(os.getenv("VALIDITY_CHUNK_SIZE", "25000"))
 
             document_text = st.session_state.get("doc_text", "")
 
-            # Safety reset (prevents stale lock from causing a rerun loop)
+            # Safety reset (prevents stale lock from causing a rerun/blank-screen loop)
             st.session_state["is_running"] = False
 
             if not document_text or len(document_text.strip()) < 50:
@@ -465,23 +417,24 @@ with tab1:
 
             doc_len = len(document_text)
 
-            # Absolute hard stop
+            # Hard stop (safety)
             if doc_len > ABSOLUTE_MAX_CHARS:
                 st.error(
-                    f"Document too long ({doc_len:,} chars). Absolute max is {ABSOLUTE_MAX_CHARS:,}. "
-                    "Please shorten or split the document."
+                    f"Document too long ({doc_len:,} chars). "
+                    f"Hard max is {ABSOLUTE_MAX_CHARS:,}."
                 )
                 st.stop()
 
-            # Standard cap unless Large Mode enabled
+            # Standard mode cap
             if (not st.session_state.get("large_mode", False)) and doc_len > STANDARD_MAX_CHARS:
                 st.error(
                     f"Document too long for standard mode ({doc_len:,} chars). "
                     f"Standard max is {STANDARD_MAX_CHARS:,}. "
-                    "Enable **Large Document Mode** to analyze bigger documents."
+                    f"Enable **Large Document Mode** to analyze bigger documents."
                 )
                 st.stop()
 
+            # Cache key (so identical docs reuse results)
             MODEL = getattr(analyzer, "model", "unknown")
             doc_hash = stable_hash(f"{TAXONOMY_VERSION}|{MODEL}|{document_text}")
 
@@ -495,34 +448,16 @@ with tab1:
             else:
                 st.session_state["is_running"] = True
                 try:
+                    # Bigger timeout in large mode
+                    timeout = 600 if st.session_state.get("large_mode", False) else 180
+
                     with st.spinner("Analyzing reasoning structure..."):
-                        # Chunk only when large mode AND doc exceeds standard cap
-                        if st.session_state.get("large_mode", False) and doc_len > STANDARD_MAX_CHARS:
-                            chunks = chunk_text(document_text, CHUNK_SIZE)
-                            st.warning(
-                                f"Large document mode enabled. Splitting into {len(chunks)} chunks "
-                                f"(~{CHUNK_SIZE:,} chars each)."
-                            )
-
-                            analyses = []
-                            failed = 0
-
-                            for ch in chunks:
-                                r = analyzer.analyze(ch)
-                                if r.get("success") and r.get("analysis"):
-                                    analyses.append(r["analysis"])
-                                else:
-                                    failed += 1
-
-                            if not analyses:
-                                result = {"success": False, "error": "All chunks failed to analyze."}
-                            else:
-                                merged = merge_analyses(analyses)
-                                result = {"success": True, "analysis": merged, "error": None}
-                                if failed:
-                                    st.info(f"Note: {failed} chunk(s) failed and were skipped.")
-                        else:
-                            result = analyzer.analyze(document_text)
+                        # analyzer.py supports these args in the patched version
+                        result = analyzer.analyze(
+                            document_text,
+                            timeout_seconds=timeout,
+                            large_mode=st.session_state.get("large_mode", False),
+                        )
 
                     st.session_state["last_result"] = result
                     st.session_state["last_doc_hash"] = doc_hash
@@ -533,12 +468,16 @@ with tab1:
                 st.error(f"Analysis failed: {result.get('error', 'Unknown error')}")
                 st.stop()
 
+            # Partial analysis warning (large docs)
+            if result.get("partial"):
+                st.warning(result.get("warning") or "Partial analysis returned due to timeout.")
+
             data = result["analysis"]
             score = int(data.get("reasoning_score", 0) or 0)
             risk = (data.get("decision_risk") or "medium").upper()
-            failures = data.get("failures_detected", []) or []
+            failures = data.get("failures_detected", [])
 
-            # Display in landing page format
+            # Display in exact landing page format
             st.markdown(
                 f"""
             <div class="validity-container">
@@ -581,7 +520,7 @@ with tab1:
                     unsafe_allow_html=True,
                 )
             else:
-                for f in failures[:3]:
+                for f in failures[:3]:  # top 3 like landing page
                     sev = (f.get("severity") or "medium").upper()
                     ftype = (f.get("type") or "").replace("_", " ").title()
                     explanation = f.get("explanation") or "No explanation provided"
@@ -605,7 +544,6 @@ with tab1:
 
         else:
             st.info("👈 Paste a document and click 'Analyze Reasoning' to begin")
-
 
 with tab2:
     st.subheader("Example Documents")
