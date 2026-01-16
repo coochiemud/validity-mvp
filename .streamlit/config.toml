@@ -3,6 +3,19 @@ enableXsrfProtection = false
 enableCORS = false
 maxUploadSize = 200
 
+[server.timeouts]
+forwardMessage = 300
+
+[client]
+toolbarMode = "minimal"
+
+[runner]
+fastReruns = false
+[server]
+enableXsrfProtection = false
+enableCORS = false
+maxUploadSize = 200
+
 [client]
 toolbarMode = "minimal"
 
