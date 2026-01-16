@@ -1,16 +1,4 @@
-# Navigate to your repo
-cd path/to/your/validity-repo
-
-# Open the config file
-nano .streamlit/config.toml
-
-# Fix the duplicate [server] section
-# Save (Ctrl+O, Enter, Ctrl+X)
-
-# Push to GitHub
-git add .streamlit/config.toml
-git commit -m "Fix duplicate server config"
-git push[server]
+[server]
 enableXsrfProtection = false
 enableCORS = false
 maxUploadSize = 200
@@ -23,29 +11,3 @@ toolbarMode = "minimal"
 
 [runner]
 fastReruns = false
-[server]
-enableXsrfProtection = false
-enableCORS = false
-maxUploadSize = 200
-
-[client]
-toolbarMode = "minimal"
-
-[runner]
-fastReruns = false
-
-[server.timeouts]
-forwardMessage = 300
-[server]
-   enableXsrfProtection = false
-   enableCORS = false
-   maxUploadSize = 200
-   
-   [client]
-   toolbarMode = "minimal"
-   
-   [runner]
-   fastReruns = false
-   
-   [server.timeouts]
-   forwardMessage = 300
