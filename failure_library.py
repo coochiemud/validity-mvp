@@ -1,6 +1,10 @@
 # failure_library.py
 
-ALLOWED_FAILURE_TYPES = [
+# -------------------------------------------------
+# MICRO (LOCAL) REASONING FAILURES
+# -------------------------------------------------
+
+ALLOWED_MICRO_FAILURE_TYPES = [
     "circular_reasoning",
     "causal_leap",
     "unfalsifiable_claim",
@@ -11,7 +15,7 @@ ALLOWED_FAILURE_TYPES = [
     "false_dichotomy",
 ]
 
-REASONING_FAILURES = {
+MICRO_REASONING_FAILURES = {
     "circular_reasoning": {
         "name": "Circular Reasoning",
         "description": "Conclusion assumes the premise",
@@ -55,9 +59,9 @@ REASONING_FAILURES = {
         "actionability": "block",
     },
     "evidence_mismatch": {
-        "name": "Evidence-Claim Mismatch",
-        "description": "Stated evidence doesn't support the conclusion drawn",
-        "example": "Customer interviews show interest, therefore product-market fit is proven.",
+        "name": "Evidence–Claim Mismatch",
+        "description": "Stated evidence does not support the conclusion drawn",
+        "example": "Customer interviews show interest, therefore product–market fit is proven.",
         "severity": "high",
         "actionability": "review",
     },
@@ -70,11 +74,95 @@ REASONING_FAILURES = {
     },
 }
 
+# Backwards compatibility (if referenced elsewhere)
+ALLOWED_FAILURE_TYPES = ALLOWED_MICRO_FAILURE_TYPES
+REASONING_FAILURES = MICRO_REASONING_FAILURES
+
+
+# -------------------------------------------------
+# STRUCTURAL (DOCUMENT-LEVEL) REASONING FAILURES
+# -------------------------------------------------
+
+ALLOWED_STRUCTURAL_FAILURE_TYPES = [
+    "OBJECTIVE_OVERLOADING",
+    "MEANS_ENDS_MISMATCH",
+    "UNBOUNDED_DEFINITIONS",
+    "SAFEGUARD_DILUTION",
+    "TEMPORAL_INCOHERENCE",
+]
+
+STRUCTURAL_REASONING_FAILURES = {
+    "OBJECTIVE_OVERLOADING": {
+        "name": "Objective Overloading",
+        "description": (
+            "A single stated objective is used to justify multiple heterogeneous "
+            "interventions without demonstrating necessity for each."
+        ),
+        "severity": "high",
+        "actionability": "fix_now",
+    },
+    "MEANS_ENDS_MISMATCH": {
+        "name": "Means–Ends Mismatch",
+        "description": (
+            "The proposed mechanism does not plausibly or directly advance the stated "
+            "objective, or the causal chain is missing."
+        ),
+        "severity": "high",
+        "actionability": "needs_research",
+    },
+    "UNBOUNDED_DEFINITIONS": {
+        "name": "Unbounded Definitions",
+        "description": (
+            "Key terms are defined expansively without limiting principles, thresholds, "
+            "or boundary tests, creating over-capture risk."
+        ),
+        "severity": "high",
+        "actionability": "fix_now",
+    },
+    "SAFEGUARD_DILUTION": {
+        "name": "Safeguard Dilution",
+        "description": (
+            "Procedural protections are reduced or removed without justification "
+            "addressing necessity, proportionality, or error costs."
+        ),
+        "severity": "high",
+        "actionability": "fix_now",
+    },
+    "TEMPORAL_INCOHERENCE": {
+        "name": "Temporal Incoherence",
+        "description": (
+            "Past conduct is captured or reclassified through present standards "
+            "without explicit transitional reasoning."
+        ),
+        "severity": "medium",
+        "actionability": "needs_research",
+    },
+}
+
+
+# -------------------------------------------------
+# PROMPT TAXONOMY TEXT
+# -------------------------------------------------
 
 def get_taxonomy_prompt_text() -> str:
-    lines = ["ALLOWED FAILURE TYPES (you MUST use exactly these):"]
-    for ftype in ALLOWED_FAILURE_TYPES:
-        failure = REASONING_FAILURES[ftype]
+    """
+    Returns the full taxonomy text injected into the analysis prompt.
+    This text defines the ONLY allowed failure types the model may use.
+    """
+
+    lines = []
+
+    lines.append("ALLOWED MICRO REASONING FAILURE TYPES (sentence- or paragraph-level):")
+
+    for ftype in ALLOWED_MICRO_FAILURE_TYPES:
+        failure = MICRO_REASONING_FAILURES[ftype]
         lines.append(f"\n- {ftype}: {failure['description']}")
         lines.append(f"  Example: {failure['example']}")
+
+    lines.append("\n\nALLOWED STRUCTURAL REASONING FAILURE TYPES (document-level):")
+
+    for ftype in ALLOWED_STRUCTURAL_FAILURE_TYPES:
+        failure = STRUCTURAL_REASONING_FAILURES[ftype]
+        lines.append(f"\n- {ftype}: {failure['description']}")
+
     return "\n".join(lines)

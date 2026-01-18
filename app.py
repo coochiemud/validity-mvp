@@ -1,458 +1,494 @@
 # app.py
-import os
-import io
+from __future__ import annotations
+
 import hashlib
-import hmac
+import io
+import json
+import time
+from typing import Any, Dict
 
 import streamlit as st
-import PyPDF2
 
-ANALYZER_VERSION = "openai-2026-01-11-v3"
-TAXONOMY_VERSION = "v3"
+from analyzer import ValidityAnalyzer
 
+# Optional PDF extraction (works if installed)
+try:
+    from pypdf import PdfReader  # type: ignore
+except Exception:
+    PdfReader = None  # type: ignore
 
-def stable_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
-
-
-def env_int(key: str, default: int) -> int:
-    try:
-        # Streamlit secrets can contain strings too; os.getenv returns strings.
-        return int(os.getenv(key, str(default)).strip())
-    except Exception:
-        return default
+# Optional: PDF export styling
+try:
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    from reportlab.lib.enums import TA_LEFT
+    from reportlab.lib.styles import ParagraphStyle
+except Exception:
+    LETTER = None  # type: ignore
 
 
 # -----------------------------
-# Custom CSS (your current branding)
+# Config
 # -----------------------------
+
+APP_NAME = "Validity"
+MODEL = "gpt-4o"  # display only; actual model comes from secrets/env in analyzer.py
+TAXONOMY_VERSION = "v2"  # bump when prompt/taxonomy changes to invalidate caches
+
+# Safe analysis limits
+RECOMMENDED_MAX_CHARS = 80_000
+HARD_MAX_CHARS = 500_000  # hard-stop extreme inputs
+
+
+# -----------------------------
+# Helpers
+# -----------------------------
+
+def stable_hash(s: str) -> str:
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
+
+
+def extract_text_from_pdf(pdf_bytes: bytes) -> str:
+    if PdfReader is None:
+        raise RuntimeError("PDF extraction requires pypdf. Install with: pip install pypdf")
+
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    parts = []
+    for page in reader.pages:
+        try:
+            parts.append(page.extract_text() or "")
+        except Exception:
+            parts.append("")
+    text = "\n".join(parts)
+    # Basic cleanup for repeated whitespace
+    text = "\n".join(line.rstrip() for line in text.splitlines())
+    return text
+
+
+def build_markdown_report(analysis: Dict[str, Any], meta: Dict[str, Any]) -> str:
+    thesis = analysis.get("thesis", {}) or {}
+    logical_chain = analysis.get("logical_chain", {}) or {}
+    micro = analysis.get("micro_failures", analysis.get("failures_detected", [])) or []
+    structural = analysis.get("structural_failures", []) or []
+    strengths = analysis.get("strengths_detected", []) or []
+    overall = analysis.get("overall_assessment", {}) or {}
+
+    md = []
+    md.append("# Validity Report\n\n")
+    md.append(f"**Generated:** {meta.get('generated_at', '')}\n\n")
+    md.append(
+        f"**Chunks analyzed:** {meta.get('chunks_analyzed', '')} "
+        f"(succeeded: {meta.get('chunks_succeeded', '')}, failed: {meta.get('chunks_failed', '')})\n\n"
+    )
+    md.append(f"**Decision risk:** {analysis.get('decision_risk', '')}\n\n")
+    md.append(f"**Reasoning score:** {analysis.get('reasoning_score', '')}\n\n")
+    md.append("\n---\n\n")
+
+    md.append("## Thesis\n\n")
+    md.append(f"- **Statement:** {thesis.get('statement', '')}\n")
+    md.append(f"- **Explicitness:** {thesis.get('explicitness', 'unclear')}\n\n")
+
+    md.append("## Logical Chain\n\n")
+    steps = logical_chain.get("steps", []) or []
+    if steps:
+        for i, s in enumerate(steps, 1):
+            md.append(f"{i}. {s}\n")
+    md.append(f"\n**Conclusion:** {logical_chain.get('conclusion','')}\n\n")
+
+    breaks = logical_chain.get("breaks", []) or []
+    if breaks:
+        md.append("**Breaks / gaps:**\n")
+        for b in breaks:
+            md.append(f"- {b}\n")
+        md.append("\n")
+
+    md.append("## Structural Failures (Document-Level)\n\n")
+    if not structural:
+        md.append("- None detected.\n\n")
+    else:
+        for f in structural:
+            md.append(f"### {f.get('type','')}\n")
+            md.append(f"- **Severity:** {f.get('severity','')}\n")
+            md.append(f"- **Confidence:** {f.get('confidence','')}\n")
+            if f.get("location_hint"):
+                md.append(f"- **Location:** {f.get('location_hint')}\n")
+            if f.get("why_it_matters"):
+                md.append(f"- **Why it matters:** {f.get('why_it_matters')}\n")
+            ev = f.get("evidence", []) or []
+            if ev:
+                md.append("- **Evidence:**\n")
+                for e in ev:
+                    md.append(f"  - “{e}”\n")
+            if f.get("fix"):
+                md.append(f"- **Fix:** {f.get('fix')}\n")
+            md.append("\n")
+
+    md.append("## Micro Failures (Local)\n\n")
+    if not micro:
+        md.append("- None detected.\n\n")
+    else:
+        for f in micro:
+            md.append(f"- **{f.get('type','')}**\n")
+            if f.get("location"):
+                md.append(f"  - Location: “{f.get('location')}”\n")
+            if f.get("explanation"):
+                md.append(f"  - Explanation: {f.get('explanation')}\n")
+            md.append("\n")
+
+    md.append("## Strengths Detected\n\n")
+    if not strengths:
+        md.append("- None listed.\n\n")
+    else:
+        for s in strengths:
+            md.append(f"- **{s.get('type','')}**: {s.get('description','')}\n")
+        md.append("\n")
+
+    md.append("## Overall Assessment\n\n")
+    md.append(f"- **Confidence:** {overall.get('confidence','')}\n")
+    md.append(f"- **Summary:** {overall.get('summary','')}\n")
+
+    return "".join(md)
+
+
+def markdown_to_pdf_bytes(md: str, title: str = "Validity Report") -> bytes:
+    if LETTER is None:
+        raise RuntimeError("PDF export requires reportlab. Install with: pip install reportlab")
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=LETTER,
+        leftMargin=0.75 * inch,
+        rightMargin=0.75 * inch,
+        topMargin=0.75 * inch,
+        bottomMargin=0.75 * inch,
+        title=title,
+    )
+
+    styles = getSampleStyleSheet()
+    body = ParagraphStyle(
+        name="Body",
+        parent=styles["BodyText"],
+        fontSize=10.5,
+        leading=13,
+        alignment=TA_LEFT,
+    )
+    h1 = styles["Heading1"]
+    h2 = styles["Heading2"]
+    h3 = styles["Heading3"]
+
+    story = []
+    for raw_line in md.splitlines():
+        line = raw_line.strip()
+        if not line:
+            story.append(Spacer(1, 8))
+            continue
+        if line.startswith("# "):
+            story.append(Paragraph(line[2:], h1))
+            story.append(Spacer(1, 8))
+        elif line.startswith("## "):
+            story.append(Paragraph(line[3:], h2))
+            story.append(Spacer(1, 6))
+        elif line.startswith("### "):
+            story.append(Paragraph(line[4:], h3))
+            story.append(Spacer(1, 4))
+        elif line.startswith("- "):
+            story.append(Paragraph("• " + line[2:], body))
+        elif line[:2].isdigit() and line[2:4] == ". ":
+            story.append(Paragraph(line, body))
+        else:
+            # Light bold conversion: first **pair** only
+            safe = line
+            if safe.count("**") >= 2:
+                safe = safe.replace("**", "<b>", 1).replace("**", "</b>", 1)
+            story.append(Paragraph(safe, body))
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+def render_failures_table_structural(structural: list[dict]) -> None:
+    for f in structural:
+        title = (
+            f"{f.get('type','')}  •  "
+            f"{f.get('severity','')} severity  •  "
+            f"{f.get('confidence','')} confidence"
+        )
+        with st.expander(title, expanded=False):
+            if f.get("why_it_matters"):
+                st.markdown(f"**Why it matters:** {f.get('why_it_matters')}")
+            if f.get("location_hint"):
+                st.markdown(f"**Location:** {f.get('location_hint')}")
+            ev = f.get("evidence", []) or []
+            if ev:
+                st.markdown("**Evidence:**")
+                for e in ev:
+                    st.markdown(f"- “{e}”")
+            if f.get("fix"):
+                st.markdown(f"**Fix:** {f.get('fix')}")
+
+
+def render_failures_table_micro(micro: list[dict]) -> None:
+    for f in micro:
+        with st.expander(f"{f.get('type','')}", expanded=False):
+            if f.get("location"):
+                st.markdown(f"**Location:** “{f.get('location')}”")
+            if f.get("explanation"):
+                st.markdown(f"**Explanation:** {f.get('explanation')}")
+
+
+# -----------------------------
+# Streamlit UI
+# -----------------------------
+
+st.set_page_config(page_title=APP_NAME, layout="wide")
+
 st.markdown(
-    """
-<style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&family=Sora:wght@400;600;700&display=swap');
-
-.stApp { background: #0a1628; color: #f8fafc; font-family: 'Inter', sans-serif; }
-#MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
-
-h1, h2, h3 { font-family: 'Sora', sans-serif !important; color: #f8fafc !important; letter-spacing: -0.02em !important; }
-
-.stTextInput input { background: rgba(30, 47, 72, 0.4) !important; border: 1px solid rgba(255,255,255,0.08) !important; color: #f8fafc !important; }
-
-.validity-container {
-  background: rgba(22, 34, 56, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 16px;
-  padding: 3rem;
-  position: relative;
-  overflow: hidden;
-  backdrop-filter: blur(10px);
-  margin-top: 2rem;
-}
-.validity-container::before {
-  content:'';
-  position:absolute; top:0; left:0;
-  width:100%; height:4px;
-  background: linear-gradient(90deg, #ef4444, #f59e0b, #10b981);
-}
-.output-header {
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 0.85rem;
-  text-transform: uppercase;
-  letter-spacing: 0.15em;
-  color: #94a3b8;
-  margin-bottom: 2.5rem;
-  padding-bottom: 1.5rem;
-  border-bottom: 1px solid rgba(255,255,255,0.08);
-}
-.output-meta { display:grid; grid-template-columns: repeat(3, 1fr); gap:2rem; margin-bottom:3rem; }
-.meta-item { display:flex; flex-direction:column; gap:0.5rem; }
-.meta-label { font-family:'IBM Plex Mono', monospace; font-size:0.75rem; text-transform:uppercase; letter-spacing:0.1em; color:#64748b; }
-.meta-value { font-size:1.1rem; font-weight:600; color:#f8fafc; }
-
-.risk-badge {
-  display:inline-flex; align-items:center; gap:0.5rem;
-  background: rgba(245,158,11,0.15);
-  color:#f59e0b;
-  padding:0.5rem 1rem;
-  border-radius:6px;
-  border:1px solid rgba(245,158,11,0.3);
-  font-size:0.95rem;
-  width: fit-content;
-}
-.score-value {
-  font-size:2.5rem; font-weight:700;
-  background: linear-gradient(135deg, #ef4444, #f59e0b);
-  -webkit-background-clip:text;
-  -webkit-text-fill-color:transparent;
-  background-clip:text;
-  line-height:1;
-}
-.score-bar { width:200px; height:8px; background:rgba(255,255,255,0.1); border-radius:4px; overflow:hidden; margin-top:0.5rem; }
-.score-fill { height:100%; background: linear-gradient(90deg, #ef4444, #f59e0b); border-radius:4px; }
-
-.issues-section { margin-top:2.5rem; }
-.issues-title {
-  font-family:'IBM Plex Mono', monospace;
-  font-size:0.85rem;
-  text-transform:uppercase;
-  letter-spacing:0.15em;
-  color:#f8fafc;
-  margin-bottom:1.5rem;
-  font-weight:600;
-}
-.issue-item { background: rgba(10,22,40,0.5); border-left:3px solid var(--issue-color); border-radius:6px; padding:1.5rem; margin-bottom:1rem; }
-.issue-header { display:flex; align-items:center; gap:1rem; margin-bottom:0.75rem; }
-
-.severity-badge {
-  font-family:'IBM Plex Mono', monospace;
-  font-size:0.7rem;
-  font-weight:600;
-  text-transform:uppercase;
-  letter-spacing:0.1em;
-  padding:0.35rem 0.75rem;
-  border-radius:4px;
-}
-.severity-critical { background: rgba(239,68,68,0.28); color:#ef4444; border:1px solid rgba(239,68,68,0.35); }
-.severity-high { background: rgba(239,68,68,0.2); color:#ef4444; }
-.severity-medium { background: rgba(245,158,11,0.2); color:#f59e0b; }
-
-.issue-title { font-size:1.1rem; font-weight:600; color:#f8fafc; margin:0; }
-.issue-description { color:#cbd5e1; line-height:1.6; font-size:0.95rem; }
-
-.stTextArea textarea {
-  background: rgba(30,47,72,0.4) !important;
-  border: 1px solid rgba(255,255,255,0.08) !important;
-  border-radius:8px !important;
-  color:#f8fafc !important;
-  font-family:'IBM Plex Mono', monospace !important;
-  font-size:0.9rem !important;
-}
-.stFileUploader {
-  background: rgba(30,47,72,0.4) !important;
-  border:1px solid rgba(255,255,255,0.08) !important;
-  border-radius:12px !important;
-  padding:1.5rem !important;
-}
-.stButton > button {
-  background: rgba(255,255,255,0.08) !important;
-  color:#f8fafc !important;
-  border: 1px solid rgba(255,255,255,0.4) !important;
-  border-radius:4px !important;
-  padding:1rem 2rem !important;
-  font-weight:600 !important;
-  text-transform:uppercase !important;
-  letter-spacing:0.05em !important;
-  font-family:'Inter', sans-serif !important;
-  width:100% !important;
-}
-.stButton > button:hover { background: rgba(255,255,255,0.12) !important; border-color: rgba(255,255,255,0.6) !important; }
-
-.stTabs [data-baseweb="tab-list"] { gap:2rem; background:transparent !important; border-bottom: 1px solid rgba(255,255,255,0.08); }
-.stTabs [data-baseweb="tab"] { background:transparent !important; color:#94a3b8 !important; font-family:'Inter', sans-serif !important; font-weight:600 !important; font-size:1rem !important; padding:1rem 0 !important; }
-.stTabs [aria-selected="true"] { color:#f8fafc !important; border-bottom:2px solid #ef4444 !important; }
-</style>
-""",
+    f"""
+    <div style="display:flex;align-items:center;justify-content:space-between;">
+      <div style="font-size:28px;font-weight:700;">{APP_NAME}</div>
+      <div style="opacity:0.75;">Reasoning audit • {TAXONOMY_VERSION}</div>
+    </div>
+    """,
     unsafe_allow_html=True,
 )
 
-
-# -----------------------------
-# Password gate (entire app)
-# -----------------------------
-def check_password() -> bool:
-    def password_entered():
-        entered = st.session_state.get("password", "")
-        expected = st.secrets.get("APP_PASSWORD", "")
-        if expected and hmac.compare_digest(entered, expected):
-            st.session_state["password_correct"] = True
-            st.session_state.pop("password", None)
-        else:
-            st.session_state["password_correct"] = False
-
-    if st.session_state.get("password_correct", False):
-        return True
-
-    st.text_input("Password", type="password", on_change=password_entered, key="password")
-
-    if st.session_state.get("password_correct") is False:
-        st.error("😕 Password incorrect")
-
-    return False
-
-
-if not check_password():
-    st.stop()
-
-
-# -----------------------------
-# Analyzer (cached)
-# -----------------------------
-@st.cache_resource
-def get_analyzer(version: str):
-    from analyzer import ValidityAnalyzer
-    return ValidityAnalyzer()
-
-
-try:
-    analyzer = get_analyzer(ANALYZER_VERSION)
-except Exception as e:
-    st.error("Analyzer failed to initialize. Check Streamlit logs for the traceback.")
-    st.exception(e)
-    st.stop()
-
-
-# -----------------------------
 # Session state
-# -----------------------------
-st.session_state.setdefault("is_running", False)
-st.session_state.setdefault("last_result", None)
-st.session_state.setdefault("last_doc_hash", None)
-st.session_state.setdefault("doc_text", "")
+if "doc_text" not in st.session_state:
+    st.session_state["doc_text"] = ""
+if "doc_hash" not in st.session_state:
+    st.session_state["doc_hash"] = ""
+if "analysis_cache" not in st.session_state:
+    st.session_state["analysis_cache"] = {}
+if "last_result" not in st.session_state:
+    st.session_state["last_result"] = None
+if "is_running" not in st.session_state:
+    st.session_state["is_running"] = False
+if "full_width" not in st.session_state:
+    st.session_state["full_width"] = False
+
+# Layout controls
+toolbar = st.container()
+with toolbar:
+    c1, c2, c3, c4 = st.columns([2, 2, 2, 6])
+    with c1:
+        st.session_state["full_width"] = st.toggle("Full-width results", value=st.session_state["full_width"])
+    with c2:
+        st.caption("Recommended max")
+        st.write(f"{RECOMMENDED_MAX_CHARS:,} chars")
+    with c3:
+        st.caption("Hard stop")
+        st.write(f"{HARD_MAX_CHARS:,} chars")
+
+# Main layout
+if st.session_state["full_width"]:
+    left_col = None
+    right_col = st.container()
+else:
+    left_col, right_col = st.columns([1, 1.4], gap="large")
 
 
-# -----------------------------
-# UI
-# -----------------------------
-st.title("🔍 Validity")
-st.caption("Reasoning quality verification — infrastructure for high-stakes decisions")
+def left_panel(container: st.delta_generator.DeltaGenerator) -> None:
+    with container:
+        st.subheader("Document Input")
 
-tab1, tab2 = st.tabs(["Analyze", "Examples"])
+        uploaded = st.file_uploader("Upload a PDF or TXT", type=["pdf", "txt"])
+        if uploaded is not None:
+            try:
+                if uploaded.type == "application/pdf":
+                    pdf_bytes = uploaded.read()
+                    text = extract_text_from_pdf(pdf_bytes)
+                    st.session_state["doc_text"] = text
+                else:
+                    st.session_state["doc_text"] = uploaded.read().decode("utf-8", errors="ignore")
+                st.success("Document loaded.")
+            except Exception as e:
+                st.error(f"Failed to read file: {e}")
 
-with tab1:
-    col1, col2 = st.columns([1, 1])
-
-    with col1:
-        st.subheader("Input Document")
-
-        uploaded = st.file_uploader("Upload a .txt/.md/.pdf file", type=["txt", "md", "pdf"])
-
-        uploaded_text = None
-        if uploaded:
-            if uploaded.type == "application/pdf":
-                try:
-                    pdf_reader = PyPDF2.PdfReader(io.BytesIO(uploaded.read()))
-                    text = ""
-                    for page in pdf_reader.pages:
-                        text += (page.extract_text() or "") + "\n"
-                    uploaded_text = text
-                    st.success(f"✅ PDF loaded ({len(text):,} characters)")
-                except Exception as e:
-                    st.error(f"Error reading PDF: {str(e)}")
-                    st.stop()
-            else:
-                text = uploaded.read().decode("utf-8", errors="ignore")
-                uploaded_text = text
-                st.success(f"✅ File loaded ({len(text):,} characters)")
-
-        default_text = uploaded_text if uploaded_text else st.session_state.get("doc_text", "")
-
-        doc_input = st.text_area(
-            "Or paste text to analyze",
-            value=default_text,
-            height=380,
-            placeholder="Investment memo, legal brief, policy document, etc.",
+        st.markdown("Or paste text:")
+        doc_text = st.text_area(
+            "Document text",
+            value=st.session_state.get("doc_text", ""),
+            height=340,
+            label_visibility="collapsed",
+            placeholder="Paste the document here…",
         )
-        st.session_state["doc_text"] = doc_input
+        st.session_state["doc_text"] = doc_text
 
-        wc = len((doc_input or "").split())
-        st.caption(f"Length: ~{wc:,} words • {len(doc_input):,} characters")
+        n_chars = len((doc_text or ""))
+        st.info(f"Length: {n_chars:,} characters")
 
-        run = st.button("🔍 Analyze Reasoning", type="primary", disabled=st.session_state["is_running"])
+        if n_chars > HARD_MAX_CHARS:
+            st.error("Document exceeds the hard limit. Please trim before analyzing.")
+            st.stop()
 
-    with col2:
-        st.subheader("Analysis Results")
-
-        if run:
-            # Env-driven limits (secrets become env vars on Streamlit Cloud)
-            STANDARD_MAX_CHARS = env_int("VALIDITY_MAX_CHARS", 300_000)
-            ABSOLUTE_MAX_CHARS = env_int("VALIDITY_ABSOLUTE_MAX_CHARS", 600_000)
-            TIMEOUT_SECONDS = env_int("VALIDITY_TIMEOUT_SECONDS", 240)
-
-            document_text = (st.session_state.get("doc_text", "") or "").strip()
-
-            # Safety reset
-            st.session_state["is_running"] = False
-
-            if len(document_text) < 50:
-                st.error("Please provide at least 50 characters of text.")
-                st.stop()
-
-            doc_len = len(document_text)
-
-            if doc_len > ABSOLUTE_MAX_CHARS:
-                st.error(f"Document too long ({doc_len:,} chars). Hard max is {ABSOLUTE_MAX_CHARS:,}.")
-                st.stop()
-
-            if doc_len > STANDARD_MAX_CHARS:
-                st.warning(
-                    f"Large document detected ({doc_len:,} chars). "
-                    f"Standard limit is {STANDARD_MAX_CHARS:,}. Proceeding anyway (may take longer)."
-                )
-
-            MODEL = getattr(analyzer, "model", "unknown")
-
-            # Cache must include the analysis settings (timeout impacts partial behavior)
-            doc_hash = stable_hash(
-                f"{TAXONOMY_VERSION}|{MODEL}|{TIMEOUT_SECONDS}|{STANDARD_MAX_CHARS}|{ABSOLUTE_MAX_CHARS}|{document_text}"
+        if n_chars > RECOMMENDED_MAX_CHARS:
+            st.warning(
+                "This document exceeds the recommended analysis length. "
+                "Validity will analyze it in sections. "
+                "Best results are achieved by trimming boilerplate, tables, and appendices."
             )
+            st.caption("Note: Clicking Analyze will still process the full document in chunks unless you trim it.")
 
-            if st.session_state["last_doc_hash"] == doc_hash and st.session_state["last_result"] is not None:
-                result = st.session_state["last_result"]
-            else:
-                st.session_state["is_running"] = True
+            colA, colB = st.columns([1, 1])
+            with colA:
+                if st.button("Auto-trim to recommended length", use_container_width=True):
+                    st.session_state["doc_text"] = (doc_text or "")[:RECOMMENDED_MAX_CHARS]
+                    st.rerun()
+            with colB:
+                st.caption("You can still analyze, but quality and stability may degrade.")
+
+        st.divider()
+
+        run = st.button("Analyze", type="primary", use_container_width=True)
+        if run:
+            st.session_state["is_running"] = False  # safety reset
+
+            text = st.session_state.get("doc_text", "")
+            if not text or len(text.strip()) < 50:
+                st.error("Please provide a longer document (at least ~50 characters).")
+                return
+
+            doc_hash = stable_hash(f"{TAXONOMY_VERSION}|{text}")
+            st.session_state["doc_hash"] = doc_hash
+
+            if doc_hash in st.session_state["analysis_cache"]:
+                st.session_state["last_result"] = st.session_state["analysis_cache"][doc_hash]
+                st.success("Loaded cached analysis.")
+                st.rerun()
+
+            st.session_state["is_running"] = True
+            with st.spinner("Analyzing…"):
                 try:
-                    with st.spinner("Analyzing reasoning structure..."):
-                        result = analyzer.analyze(document_text, timeout_seconds=TIMEOUT_SECONDS)
+                    analyzer = ValidityAnalyzer()
+                    result = analyzer.analyze(text)
+                    st.session_state["analysis_cache"][doc_hash] = result
                     st.session_state["last_result"] = result
-                    st.session_state["last_doc_hash"] = doc_hash
+                except Exception as e:
+                    st.session_state["last_result"] = {
+                        "success": False,
+                        "analysis": None,
+                        "error": str(e),
+                        "chunks_analyzed": 0,
+                        "chunks_succeeded": 0,
+                        "chunks_failed": 0,
+                        "analysis_time": 0,
+                    }
                 finally:
                     st.session_state["is_running"] = False
 
-            if not result.get("success"):
-                st.error(f"Analysis failed: {result.get('error', 'Unknown error')}")
-                st.stop()
+            st.rerun()
 
-            partial = bool(result.get("partial", False))
-            chunks_total = int(result.get("chunks_analyzed", 1) or 1)
-            chunks_ok = int(result.get("chunks_succeeded", 1) or 1)
 
-            if partial:
-                st.warning(
-                    f"Partial analysis delivered: synthesized {chunks_ok}/{chunks_total} chunks "
-                    f"before timeout ({TIMEOUT_SECONDS}s)."
-                )
+def results_panel(container: st.delta_generator.DeltaGenerator) -> None:
+    with container:
+        st.subheader("Analysis Results")
 
-            data = result["analysis"]
-            score = int(data.get("reasoning_score", 0) or 0)
-            risk = (data.get("decision_risk") or "medium").upper()
-            failures = data.get("failures_detected", []) or []
+        result = st.session_state.get("last_result")
+        if not result:
+            st.caption("Run an analysis to see results here.")
+            return
 
-            st.markdown(
-                f"""
-<div class="validity-container">
-  <div class="output-header">VALIDITY ANALYSIS — EXECUTIVE SUMMARY (AUTOMATED LOGIC AUDIT)</div>
+        if not result.get("success"):
+            st.error(result.get("error") or "Analysis failed.")
+            return
 
-  <div class="output-meta">
-    <div class="meta-item">
-      <div class="meta-label">Document Type</div>
-      <div class="meta-value">Investment Memorandum</div>
-    </div>
-    <div class="meta-item">
-      <div class="meta-label">Risk Classification</div>
-      <div class="meta-value">
-        <span class="risk-badge"><span>⚠️</span><span>{risk.title()}</span></span>
-      </div>
-    </div>
-    <div class="meta-item">
-      <div class="meta-label">Reasoning Quality</div>
-      <div class="meta-value">
-        <div class="score-value">{score}/100</div>
-        <div class="score-bar"><div class="score-fill" style="width: {max(0, min(100, score))}%;"></div></div>
-      </div>
-    </div>
-  </div>
+        analysis = result.get("analysis") or {}
+        n_chars = len(st.session_state.get("doc_text", "") or "")
 
-  <div class="issues-section">
-    <div class="issues-title">Critical Issues Identified</div>
-""",
-                unsafe_allow_html=True,
+        s1, s2, s3, s4 = st.columns([1, 1, 1, 2])
+        with s1:
+            st.metric("Decision risk", analysis.get("decision_risk", ""))
+        with s2:
+            st.metric("Reasoning score", analysis.get("reasoning_score", ""))
+        with s3:
+            st.metric("Failures", analysis.get("total_failures_detected", 0))
+        with s4:
+            st.caption(
+                f"Doc length: {n_chars:,} chars • "
+                f"Chunks: {result.get('chunks_analyzed')} • "
+                f"Time: {result.get('analysis_time')}s"
             )
 
-            if not failures:
-                st.markdown(
-                    '<p style="color: #10b981;">✅ No critical reasoning failures detected</p>',
-                    unsafe_allow_html=True,
+        st.divider()
+
+        meta = {
+            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "chunks_analyzed": result.get("chunks_analyzed"),
+            "chunks_succeeded": result.get("chunks_succeeded"),
+            "chunks_failed": result.get("chunks_failed"),
+        }
+        md = build_markdown_report(analysis, meta)
+
+        exp1, exp2, exp3 = st.columns([1, 1, 6])
+        with exp1:
+            st.download_button(
+                "Download Markdown",
+                data=md.encode("utf-8"),
+                file_name="validity_report.md",
+                mime="text/markdown",
+                use_container_width=True,
+            )
+        with exp2:
+            if LETTER is None:
+                st.button(
+                    "Download PDF",
+                    disabled=True,
+                    use_container_width=True,
+                    help="Install reportlab to enable PDF export.",
                 )
             else:
-                for f in failures[:3]:
-                    sev = (f.get("severity") or "medium").lower()
-                    sev_label = sev.upper()
-                    ftype = (f.get("type") or "").replace("_", " ").title()
-                    explanation = f.get("explanation") or "No explanation provided"
-
-                    border_color = "#ef4444" if sev in ("high", "critical") else "#f59e0b"
-                    sev_class = "critical" if sev == "critical" else ("high" if sev == "high" else "medium")
-
-                    st.markdown(
-                        f"""
-<div class="issue-item" style="--issue-color: {border_color};">
-  <div class="issue-header">
-    <span class="severity-badge severity-{sev_class}">{sev_label}</span>
-    <h4 class="issue-title">{ftype}</h4>
-  </div>
-  <p class="issue-description">{explanation}</p>
-</div>
-""",
-                        unsafe_allow_html=True,
+                try:
+                    pdf_bytes = markdown_to_pdf_bytes(md)
+                    st.download_button(
+                        "Download PDF",
+                        data=pdf_bytes,
+                        file_name="validity_report.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                    )
+                except Exception:
+                    st.button(
+                        "Download PDF",
+                        disabled=True,
+                        use_container_width=True,
+                        help="PDF export unavailable (reportlab error).",
                     )
 
-            st.markdown("</div></div>", unsafe_allow_html=True)
-        else:
-            st.info("👈 Paste a document and click 'Analyze Reasoning' to begin")
+        st.divider()
 
-with tab2:
-    st.subheader("Example Documents")
-    st.write("Try these examples to see how Validity detects reasoning failures:")
+        thesis = analysis.get("thesis", {}) or {}
+        with st.expander("Thesis", expanded=True):
+            st.markdown(f"**Statement:** {thesis.get('statement','')}")
+            st.markdown(f"**Explicitness:** {thesis.get('explicitness','unclear')}")
 
-    example = st.selectbox(
-        "Select an example:",
-        ["Flawed Investment Memo", "Sound Policy Recommendation", "Mixed Market Analysis"],
-    )
+        overall = analysis.get("overall_assessment", {}) or {}
+        with st.expander("Overall Assessment", expanded=True):
+            st.markdown(f"**Confidence:** {overall.get('confidence','')}")
+            st.markdown(overall.get("summary", ""))
 
-    examples = {
-        "Flawed Investment Memo": """Investment Thesis: AcmeCorp
+        structural = analysis.get("structural_failures", []) or []
+        with st.expander(f"Structural Failures ({len(structural)})", expanded=True):
+            if not structural:
+                st.caption("None detected.")
+            else:
+                render_failures_table_structural(structural)
 
-We should invest $5M in AcmeCorp because they are disrupting the enterprise software market.
+        micro = analysis.get("micro_failures", analysis.get("failures_detected", [])) or []
+        with st.expander(f"Micro Failures ({len(micro)})", expanded=False):
+            if not micro:
+                st.caption("None detected.")
+            else:
+                render_failures_table_micro(micro)
 
-Market Opportunity: The enterprise software market is worth $500B and growing at 15% annually.
-If AcmeCorp captures just 1% of this market, they will generate $5B in revenue.
+        with st.expander("Raw JSON (debug)", expanded=False):
+            st.code(json.dumps(result, indent=2))
 
-Competitive Advantage: AcmeCorp has a unique approach that competitors cannot replicate.
-Their team has deep expertise in the space, having worked at major tech companies.
 
-Traction: Customer acquisition costs have been rising over the past 6 months, demonstrating
-strong product-market fit. The company has shown consistent growth in user signups.
+# Render panels
+if left_col is not None:
+    left_panel(left_col)
 
-Therefore, we recommend a $5M investment at a $50M valuation.""",
-        "Sound Policy Recommendation": """Recommendation: Implement Variable Speed Limits in School Zones
-
-Problem: Current fixed 25mph speed limits in school zones are enforced 24/7, including
-nights, weekends, and holidays when no children are present.
-
-Evidence: Traffic analysis shows:
-- 89% of speeding violations occur outside school hours
-- Average speeds during school hours: 28mph (slight violation)
-- Average speeds at night: 42mph (significant violation)
-- Zero child pedestrian incidents have occurred outside 7am-4pm in past 5 years
-
-Proposed Solution: Variable speed limits:
-- 15mph during school arrival/dismissal (7-9am, 2-4pm)
-- 25mph during school hours (9am-2pm)
-- 35mph outside school hours
-
-Expected Outcomes:
-- Reduced speeding violations
-- Maintained child safety during relevant hours
-- Improved compliance through reasonable restrictions""",
-        "Mixed Market Analysis": """Q4 2024 Market Analysis: Renewable Energy Sector
-
-Thesis: Renewable energy stocks will outperform the S&P 500 in 2025.
-
-Supporting Factors:
-1. Government policy: New federal tax credits provide 30% subsidy for solar installations
-2. Technology trends: Solar panel efficiency has improved 40% since 2020
-3. Market demand: Corporate renewable commitments have doubled year-over-year
-
-However, the sector faces headwinds:
-- Interest rates remain elevated
-- Supply chain constraints persist
-- Some analysts predict oversupply in 2025
-
-Recommendation: Overweight renewable energy stocks by 15%.""",
-    }
-
-    st.code(examples[example], language=None)
-
-    if st.button("Load this example into analyzer"):
-        st.session_state["doc_text"] = examples[example]
-        st.rerun()
+results_panel(right_col if right_col is not None else st.container())
